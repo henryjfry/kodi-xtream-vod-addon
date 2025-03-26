@@ -22,3 +22,5 @@ To avoid constantly polling and downloading from the server I have implemented a
 All movies and tv shows will integrate with the Kodi library allowing integration with the likes of Trakt and metadata scrapers. 
 
 Tested on Ubuntu 24.04.2 LTS with Kodi 21.2 Omega as its written in Python3, depending on you Python setup you may need to add shedule to your packages. pip install schedule
+
+To install, download the latest zip from the release section and manually install in Kodi Addons, Install from ZIP file
