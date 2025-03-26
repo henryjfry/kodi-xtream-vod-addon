@@ -1,0 +1,43 @@
+msgid ""
+msgstr ""
+"Language: en_GB\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "30001"
+msgstr "M3U to STRM Processor"
+
+msgid "30002"
+msgstr "Processes M3U playlists into STRM files for Kodi."
+
+msgid "30010"
+msgstr "General"
+
+msgid "30011"
+msgstr "Working Directory"
+
+msgid "30012"
+msgstr "Movies Directory"
+
+msgid "30013"
+msgstr "TV Shows Directory"
+
+msgid "30020"
+msgstr "Xtream API"
+
+msgid "30021"
+msgstr "Server Address (e.g., example.com)"
+
+msgid "30022"
+msgstr "Username"
+
+msgid "30023"
+msgstr "Password"
+
+msgid "30030"
+msgstr "Update Settings"
+
+msgid "30031"
+msgstr "Update Interval (days)"
+
+msgid "30032"
+msgstr "Update Time (HH:MM)"

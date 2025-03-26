@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<settings>
+    <category label="Directories">
+        <setting id="working_dir" type="folder" label="Workking directory" default="" />
+        <setting id="movies_dir" type="folder" label="Movies Directory" default="" />
+        <setting id="tv_shows_dir" type="folder" label="TV Show Directory" default="" />
+    </category>
+    <category label="Server Information">
+        <setting id="server" type="text" label="Server Address" default="http://" />
+        <setting id="username" type="text" label="Username" default="" />
+        <setting id="password" type="text" option="hidden" label="Password" default="" />
+    </category>
+    <category label="Update Interval">
+        <setting id="update_interval" type="number" label="Days between updates" default="1" />
+        <setting id="update_time" type="text" label="Update time" default="00:00" />
+    </category>
+</settings>
