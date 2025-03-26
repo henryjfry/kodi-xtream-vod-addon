@@ -246,6 +246,10 @@ def cleanup_stale_files(valid_files, stats):
                         except Exception:
                             pass
 
+def get_server_domain():
+    """Extract domain from server URL."""
+    return SERVER.split('://')[1] if '://' in SERVER else SERVER
+
 def process_m3u():
     stats = Stats()
     xbmcvfs.mkdirs(MOVIES_DIR)
@@ -271,16 +275,17 @@ def process_m3u():
             url = lines[i + 1].strip()
            
             if info['name'] and info['year']:
-                # Movie processing remains the same
-                if url.startswith('http://cf.301-cdn.me:80/movie/'):
+                server_domain = get_server_domain()
+                # Movie processing
+                if url.startswith(f'http://{server_domain}:80/movie/') or url.startswith(f'https://{server_domain}:80/movie/'):
                     safe_name = sanitize_filename(info['name'])
                     strm_path = os.path.join(MOVIES_DIR, f"{safe_name} {info['year']}.strm")
                     valid_files.add(strm_path)
                     if create_strm(strm_path, url, stats, create_dirs=False):
                         stats.movies_added += 1
                
-                # TV Show processing using extracted variables
-                elif url.startswith('http://cf.301-cdn.me:80/series/'):
+                # TV Show processing
+                elif url.startswith(f'http://{server_domain}:80/series/') or url.startswith(f'https://{server_domain}:80/series/'):
                     if info['season'] and info['episode']:
                         # Get the variables from info
                         tv_show_name = sanitize_filename(info['name'])
