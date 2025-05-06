@@ -1,3 +1,4 @@
+
 import os
 import requests
 from datetime import datetime, timedelta
@@ -12,6 +13,11 @@ import xbmc
 import json
 import threading
 import schedule
+import asyncio
+import aiohttp
+import aiofiles
+from functools import partial
+import unicodedata
 
 # Initialize Kodi addon
 addon = xbmcaddon.Addon()
@@ -47,7 +53,28 @@ class Stats:
         self.shows_deleted = 0
         self.episodes_deleted = 0
 
-# Setup logging
+# Add after other constants
+LOG_SIZE_LIMIT = 10 * 1024 * 1024  # 10MB in bytes
+
+def check_and_clear_log():
+    """Check log file size and clear if over limit"""
+    try:
+        if xbmcvfs.exists(LOG_FILE):
+            log_size = xbmcvfs.Stat(LOG_FILE).st_size()
+            if log_size > LOG_SIZE_LIMIT:
+                logging.info(f"Log size ({log_size/1024/1024:.2f}MB) exceeds limit. Clearing log.")
+                with open(LOG_FILE, 'w') as f:
+                    f.write("Log cleared due to size limit\n")
+                return True
+        return False
+    except Exception as e:
+        print(f"Error checking log size: {str(e)}")
+        return False
+
+# Replace existing logging setup with:
+if check_and_clear_log():
+    xbmcgui.Dialog().notification("M3U Processing", "Log file cleared due to size limit", xbmcgui.NOTIFICATION_INFO, 5000)
+
 logging.basicConfig(
     filename=LOG_FILE,
     level=logging.INFO,
@@ -57,14 +84,14 @@ logging.basicConfig(
 
 def should_download_file():
     """Check if the M3U file should be downloaded based on its age."""
-    if not xbmcvfs.exists(M3U_FILE):
+    if not os.path.exists(M3U_FILE):
         return True
     file_time = datetime.fromtimestamp(xbmcvfs.Stat(M3U_FILE).st_mtime())
     return datetime.now() - file_time > timedelta(hours=24)
 
-def curl_request(url, binary=False):
+async def curl_request(url, binary=False):
     """
-    Make a request with custom headers
+    Make an async request with custom headers
     binary: If True, return raw bytes instead of text (for images)
     """
     try:
@@ -75,23 +102,24 @@ def curl_request(url, binary=False):
             'Connection': 'keep-alive',
         }
 
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        return response.content if binary else response.text
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as response:
+                if response.status == 200:
+                    return await response.read() if binary else await response.text()
+                return None
 
-    except requests.RequestException as e:
+    except Exception as e:
         logging.error(f"RequestException: {e}")
         return None
 
-def download_m3u():
+async def download_m3u():
     """Download the M3U file if it is outdated."""
     if should_download_file():
         xbmcgui.Dialog().notification("M3U Processing", "Downloading M3U file...", xbmcgui.NOTIFICATION_INFO, 5000)
-        response = curl_request(M3U_URL, binary=True)
+        response = await curl_request(M3U_URL, binary=True)
         if response:
-            file_handle = xbmcvfs.File(M3U_FILE, 'wb')
-            file_handle.write(response)
-            file_handle.close()
+            async with aiofiles.open(M3U_FILE, 'wb') as file:
+                await file.write(response)
             xbmcgui.Dialog().notification("M3U Processing", "Download complete", xbmcgui.NOTIFICATION_INFO, 5000)
         else:
             xbmcgui.Dialog().notification("M3U Processing", "Failed to download M3U file", xbmcgui.NOTIFICATION_ERROR, 5000)
@@ -100,15 +128,18 @@ def download_m3u():
         xbmcgui.Dialog().notification("M3U Processing", "Using existing M3U file (less than 24 hours old)", xbmcgui.NOTIFICATION_INFO, 5000)
 
 def extract_info(extinf_line):
+    """
+    Extract information about the TV show or movie from the #EXTINF line.
+    """
     # Extract show name from tvg-name
     name_match = re.search(r'tvg-name="([^"]+)"', extinf_line)
     tv_show_name = None
     if name_match:
         full_name = name_match.group(1)
-        # Split on " - " and take everything after it
+        # Remove any leading language codes like "EN - "
         if " - " in full_name:
             full_name = full_name.split(" - ", 1)[1]
-           
+        
         # Extract everything up to the year if present
         year_match = re.search(r'(.+?)(?:\s*\(\d{4}\))', full_name)
         if year_match:
@@ -116,17 +147,30 @@ def extract_info(extinf_line):
         else:
             tv_show_name = full_name.strip()
 
-    # Extract year
+    # Fallback: Extract name from the full line if tvg-name is not found
+    if not tv_show_name:
+        # Try to extract any text between quotes
+        alt_name_match = re.search(r'"([^"]+)"', extinf_line)
+        if alt_name_match:
+            tv_show_name = alt_name_match.group(1).strip()
+        else:
+            # Last resort: Use "Unknown Title" with timestamp
+            tv_show_name = f"Unknown Title {int(time.time())}"
+
+    # Extract year with fallback
     year_match = re.search(r'\((\d{4})\)', extinf_line)
-    tv_show_year = year_match.group(1) if year_match else None
+    tv_show_year = year_match.group(1) if year_match else "0000"
 
     # Extract season and episode numbers
     season_match = re.search(r'S(\d{2})', extinf_line)
-    tv_show_season = season_match.group(1) if season_match else None
+    tv_show_season = season_match.group(1) if season_match else "01"
 
     episode_match = re.search(r'E(\d{2})', extinf_line)
-    tv_show_episode = episode_match.group(1) if episode_match else None
-   
+    tv_show_episode = episode_match.group(1) if episode_match else "01"
+
+    # Log extracted info for debugging
+    logging.debug(f"Extracted info: name={tv_show_name}, year={tv_show_year}, season={tv_show_season}, episode={tv_show_episode}")
+
     return {
         'name': tv_show_name,
         'year': tv_show_year,
@@ -134,22 +178,35 @@ def extract_info(extinf_line):
         'episode': tv_show_episode
     }
 
-def create_strm(path, url, stats, create_dirs=True):
+async def create_strm(path, url, stats, create_dirs=True):
     try:
-        # Use xbmcvfs for file operations
-        if not create_dirs:
-            xbmcvfs.mkdirs(os.path.dirname(path) or '.')
-        else:
-            xbmcvfs.mkdirs(os.path.dirname(path))
-           
-        if not xbmcvfs.exists(path):
-            file_handle = xbmcvfs.File(path, 'w')
-            file_handle.write(url)
-            file_handle.close()
-            return True
+        # Ensure parent directory path is ASCII-safe
+        parent_dir = os.path.dirname(path)
+        if create_dirs and parent_dir:
+            try:
+                os.makedirs(parent_dir, exist_ok=True)
+            except Exception as e:
+                logging.error(f"Error creating directory {parent_dir}: {str(e)}")
+                return False
+        
+        # Ensure file path is ASCII-safe
+        safe_path = os.path.join(
+            os.path.dirname(path),
+            sanitize_filename(os.path.basename(path))
+        )
+        
+        if not os.path.exists(safe_path):
+            try:
+                # Open in binary mode to avoid encoding issues
+                async with aiofiles.open(safe_path, 'wb') as file:
+                    await file.write(url.encode('utf-8'))
+                return True
+            except Exception as e:
+                logging.error(f"Error writing to file {safe_path}: {str(e)}")
+                return False
         return False
     except Exception as e:
-        logging.error(f"Error creating file {path}: {str(e)}")
+        logging.error(f"Error in create_strm for {path}: {str(e)}")
         return False
 
 def update_progress(current, total, movies, episodes):
@@ -163,20 +220,24 @@ def update_progress(current, total, movies, episodes):
     sys.stdout.flush()
 
 def sanitize_filename(filename):
-    # Replace slashes, backslashes and other problematic characters
+    # First, normalize unicode characters
+    filename = unicodedata.normalize('NFKD', filename)
+    # Remove any remaining non-ASCII characters
+    filename = ''.join(c for c in filename if ord(c) < 128)
+    # Remove leading numeration (e.g. "17. Movie" -> "Movie")
+    filename = re.sub(r'^\s*\d+\.\s*', '', filename)
+    # Replace invalid characters
     invalid_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|']
     for char in invalid_chars:
         filename = filename.replace(char, '-')
     return filename.strip()
 
 def cleanup_stale_files(valid_files, stats):
-    # Replace all file operations with xbmcvfs equivalents
     dialog = xbmcgui.Dialog()
     
     # Check Movies directory
     movies_to_delete = []
-    dirs, files = xbmcvfs.listdir(MOVIES_DIR)
-    for filename in files:
+    for filename in os.listdir(MOVIES_DIR):
         if filename.endswith('.strm'):
             filepath = os.path.join(MOVIES_DIR, filename)
             if filepath not in valid_files:
@@ -185,27 +246,23 @@ def cleanup_stale_files(valid_files, stats):
     if movies_to_delete:
         if dialog.yesno("Delete Movies", f"Found {len(movies_to_delete)} movies to delete. Proceed?"):
             for filepath in movies_to_delete:
-                xbmcvfs.delete(filepath)
+                os.remove(filepath)
                 stats.movies_deleted += 1
 
     # Check TVShows directory
-    show_folders = set()
     episodes_to_delete = []
     empty_seasons = []
     empty_shows = []
 
-    dirs, show_folders = xbmcvfs.listdir(TV_SHOWS_DIR)
-    for show_folder in show_folders:
+    for show_folder in os.listdir(TV_SHOWS_DIR):
         show_path = os.path.join(TV_SHOWS_DIR, show_folder)
-        if xbmcvfs.isdir(show_path):
+        if os.path.isdir(show_path):
             empty_show = True
-            dirs, season_folders = xbmcvfs.listdir(show_path)
-            for season_folder in season_folders:
+            for season_folder in os.listdir(show_path):
                 season_path = os.path.join(show_path, season_folder)
-                if xbmcvfs.isdir(season_path):
+                if os.path.isdir(season_path):
                     files_deleted = False
-                    dirs, episodes = xbmcvfs.listdir(season_path)
-                    for episode in episodes:
+                    for episode in os.listdir(season_path):
                         if episode.endswith('.strm'):
                             episode_path = os.path.join(season_path, episode)
                             if episode_path not in valid_files:
@@ -213,7 +270,7 @@ def cleanup_stale_files(valid_files, stats):
                                 files_deleted = True
 
                     # Track empty season folders
-                    if not xbmcvfs.listdir(season_path)[1]:
+                    if not os.listdir(season_path):
                         empty_seasons.append(season_path)
                     elif not files_deleted:
                         empty_show = False
@@ -225,7 +282,7 @@ def cleanup_stale_files(valid_files, stats):
     if episodes_to_delete:
         if dialog.yesno("Delete Episodes", f"Found {len(episodes_to_delete)} episodes to delete. Proceed?"):
             for episode_path in episodes_to_delete:
-                xbmcvfs.delete(episode_path)
+                os.remove(episode_path)
                 stats.episodes_deleted += 1
 
             # After deleting episodes, handle empty folders
@@ -233,7 +290,7 @@ def cleanup_stale_files(valid_files, stats):
                 if dialog.yesno("Delete Empty Seasons", f"Found {len(empty_seasons)} empty season folders. Proceed?"):
                     for season_path in empty_seasons:
                         try:
-                            xbmcvfs.rmdir(season_path)
+                            os.rmdir(season_path)
                         except Exception:
                             pass
 
@@ -241,7 +298,7 @@ def cleanup_stale_files(valid_files, stats):
                 if dialog.yesno("Delete Empty Shows", f"Found {len(empty_shows)} empty show folders. Proceed?"):
                     for show_path in empty_shows:
                         try:
-                            xbmcvfs.rmdir(show_path)
+                            os.rmdir(show_path)
                             stats.shows_deleted += 1
                         except Exception:
                             pass
@@ -250,106 +307,87 @@ def get_server_domain():
     """Extract domain from server URL."""
     return SERVER.split('://')[1] if '://' in SERVER else SERVER
 
-def process_m3u():
+async def process_m3u():
     stats = Stats()
-    xbmcvfs.mkdirs(MOVIES_DIR)
-    xbmcvfs.mkdirs(TV_SHOWS_DIR)
+    os.makedirs(MOVIES_DIR, exist_ok=True)
+    os.makedirs(TV_SHOWS_DIR, exist_ok=True)
     valid_files = set()
 
-    # Check if M3U file is empty
     if xbmcvfs.Stat(M3U_FILE).st_size() == 0:
         xbmcgui.Dialog().notification("M3U Processing", "Error: Empty playlist file. Exiting.", xbmcgui.NOTIFICATION_ERROR, 5000)
         sys.exit(1)
 
     xbmcgui.Dialog().notification("M3U Processing", "Processing M3U file...", xbmcgui.NOTIFICATION_INFO, 5000)
-    file_handle = xbmcvfs.File(M3U_FILE, 'r')
-    lines = file_handle.read().splitlines()
-    file_handle.close()
+    async with aiofiles.open(M3U_FILE, 'r', encoding='utf-8', errors='replace') as file:
+        content = await file.read()
+        lines = content.splitlines()
 
-    total_lines = len(lines)
+    # Create tasks for processing entries
+    tasks = []
+    server_domain = get_server_domain()
+    
     i = 0
-    while i < total_lines:
+    while i < len(lines):
         line = lines[i].strip()
         if line.startswith('#EXTINF'):
             info = extract_info(line)
             url = lines[i + 1].strip()
-           
-            if info['name'] and info['year']:
-                server_domain = get_server_domain()
-                # Movie processing
+            
+            if url:
                 if url.startswith(f'http://{server_domain}:80/movie/') or url.startswith(f'https://{server_domain}:80/movie/'):
                     safe_name = sanitize_filename(info['name'])
-                    strm_path = os.path.join(MOVIES_DIR, f"{safe_name} {info['year']}.strm")
+                    # Only append year if year != "0000"
+                    movie_filename = f"{safe_name}.strm" if info['year'] == "0000" else f"{safe_name} {info['year']}.strm"
+                    strm_path = os.path.join(MOVIES_DIR, movie_filename)
                     valid_files.add(strm_path)
-                    if create_strm(strm_path, url, stats, create_dirs=False):
+                    # Create STRM file immediately instead of adding to tasks
+                    if await create_strm(strm_path, url, stats, create_dirs=False):
                         stats.movies_added += 1
-               
-                # TV Show processing
+                
                 elif url.startswith(f'http://{server_domain}:80/series/') or url.startswith(f'https://{server_domain}:80/series/'):
-                    if info['season'] and info['episode']:
-                        # Get the variables from info
-                        tv_show_name = sanitize_filename(info['name'])
-                        tv_show_year = info['year']
-                        tv_show_season = info['season']
-                        tv_show_episode = info['episode']
-                       
-                        # Create parent folder path
-                        parent_folder = os.path.join(TV_SHOWS_DIR, f"{tv_show_name} {tv_show_year}")
-                       
-                        # Create season folder path
-                        season_folder = os.path.join(parent_folder, f"Season {tv_show_season}")
-                       
-                        # Create STRM file path
-                        strm_filename = f"{tv_show_name} S{tv_show_season}E{tv_show_episode}.strm"
-                        strm_path = os.path.join(season_folder, strm_filename)
-                        valid_files.add(strm_path)
-                       
-                        # Ensure season folder exists
-                        xbmcvfs.mkdirs(parent_folder)
-                        xbmcvfs.mkdirs(season_folder)
-                       
-                        # Create STRM file if it doesn't exist
-                        if not xbmcvfs.exists(strm_path):
-                            file_handle = xbmcvfs.File(strm_path, 'w')
-                            file_handle.write(url)
-                            file_handle.close()
-                            stats.shows_added.add(f"{tv_show_name} {tv_show_year}")
+                    # Extract clean show name (without season/episode info)
+                    full_name = info['name']
+                    # Remove 'S01 E01' pattern and similar from show name
+                    clean_name = re.sub(r'\s+S\d+\s*E\d+.*$', '', full_name)
+                    # Extract year if present
+                    year_match = re.search(r'\((\d{4})\)', clean_name)
+                    year = year_match.group(1) if year_match else ''
+                    # Remove year from name if present
+                    show_name = re.sub(r'\s*\(\d{4}\).*$', '', clean_name)
+                    # Create proper folder structure
+                    show_folder = os.path.join(TV_SHOWS_DIR, f"{sanitize_filename(show_name)}{' ' + year if year else ''}")
+                    season_folder = os.path.join(show_folder, f"Season {int(info['season'])}")
+                    episode_filename = f"{sanitize_filename(show_name)} S{info['season']}E{info['episode']}.strm"
+                    strm_path = os.path.join(season_folder, episode_filename)
+                    valid_files.add(strm_path)
+                    
+                    os.makedirs(show_folder, exist_ok=True)
+                    os.makedirs(season_folder, exist_ok=True)
+                    
+                    if not os.path.exists(strm_path):
+                        if await create_strm(strm_path, url, stats):
+                            stats.shows_added.add(show_name)
                             stats.episodes_added += 1
             i += 2
         else:
             i += 1
-       
-        update_progress(i, total_lines, stats.movies_added, stats.episodes_added)
-
+        
+        # Update progress every 100 items
+        if i % 100 == 0:
+            update_progress(i, len(lines), stats.movies_added, stats.episodes_added)
+    
     # Cleanup stale files after processing
     cleanup_stale_files(valid_files, stats)
     xbmcgui.Dialog().notification("M3U Processing", "Processing complete!", xbmcgui.NOTIFICATION_INFO, 5000)
     return stats
 
-def schedule_task():
-    """Schedule the script to run at the specified time and interval."""
-    def run_scheduled_task():
-        logging.info("Scheduled task started.")
-        main()
-
-    # Schedule the task
-    schedule.every(UPDATE_INTERVAL).days.at(UPDATE_TIME).do(run_scheduled_task)
-
-    # Run the scheduler in a separate thread
-    def scheduler_thread():
-        while True:
-            schedule.run_pending()
-            time.sleep(1)
-
-    threading.Thread(target=scheduler_thread, daemon=True).start()
-
-def main():
+async def async_main():
     start_time = time.time()
     xbmcgui.Dialog().notification("M3U Processing", "Starting M3U processing script...", xbmcgui.NOTIFICATION_INFO, 5000)
     logging.info("Script started")
    
-    download_m3u()
-    stats = process_m3u()
+    await download_m3u()
+    stats = await process_m3u()
    
     end_time = time.time()
     run_time = end_time - start_time
@@ -370,8 +408,9 @@ def main():
     logging.info(f"Episodes deleted: {stats.episodes_deleted}")
 
 if __name__ == "__main__":
-    # Start the scheduler
-    schedule_task()
-
-    # Run the script manually if needed
-    main()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(async_main())
+    finally:
+        loop.close()
