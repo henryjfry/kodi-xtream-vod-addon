@@ -23,4 +23,13 @@ All movies and tv shows will integrate with the Kodi library allowing integratio
 
 Tested on Ubuntu 24.04.2 LTS with Kodi 21.2 Omega as its written in Python3, depending on you Python setup you may need to add shedule to your packages. pip install schedule
 
-To install, download the latest zip from the release section and manually install in Kodi Addons, Install from ZIP file
+**Installation instructions**
+- Download the [requirements.txt](https://github.com/Boc86/kodi-xtream-vod-addon/blob/main/requirements.txt) file from above
+- Open a console / command prompt from the folder you downloaded the requirements file to
+- Install the requirements with
+```bash
+pip install -r requirements.txt
+```
+- Download the latest addon from [Releases](https://github.com/Boc86/kodi-xtream-vod-addon/releases)
+- Enable install plugins from unkonwn sources in Kodi
+- Install the downloaded addon through Kodi install from zip
