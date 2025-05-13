@@ -3,12 +3,15 @@
     <category label="Directories">
         <setting id="working_dir" type="folder" label="Workking directory" default="" />
         <setting id="movies_dir" type="folder" label="Movies Directory" default="" />
-        <setting id="tv_shows_dir" type="folder" label="TV Show Directory" default="" />
+        <setting id="tvshows_dir" type="folder" label="TV Show Directory" default="" />
     </category>
     <category label="Server Information">
-        <setting id="server" type="text" label="Server Address" default="http://" />
+        <setting id="server_address" type="text" label="Server Address" default="http://" />
         <setting id="username" type="text" label="Username" default="" />
         <setting id="password" type="text" option="hidden" label="Password" default="" />
+    </category>
+    <category label="TMDb API">
+        <setting id="tmdb_api_key" type="text" label="API Key" default="sign up for free at https://www.themoviedb.org/" />
     </category>
     <category label="Update Interval">
         <setting id="update_interval" type="number" label="Days between updates" default="1" />
