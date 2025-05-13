@@ -5,3 +5,6 @@ schedule
 asyncio
 aiohttp
 aiofiles
+requests_cache
+unidecode
+rapidfuzz
