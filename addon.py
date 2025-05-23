@@ -14,6 +14,7 @@ from unidecode import unidecode
 from requests_cache import CachedSession
 from rapidfuzz import fuzz, process
 import shutil
+from xml.etree.ElementTree import Element, SubElement, ElementTree
 
 # Kodi settings
 ADDON = xbmcaddon.Addon()
@@ -74,6 +75,14 @@ def confirm_and_delete(paths):
         log_to_kodi(f"Deleted {len(paths)} files/folders.")
     else:
         log_to_kodi("User cancelled deletion.")
+
+def sanitize(name):
+    name = unidecode(name)
+    name = re.sub(r'[<>:"/\\|?*]', '', name)
+    name = re.sub(r'\s+', ' ', name).strip()
+    # Remove any remaining non-ASCII characters
+    name = ''.join(c for c in name if ord(c) < 128)
+    return name
 
 def fetch_json_data_sync():
     ensure_dir(CACHE_DIR)
@@ -173,45 +182,89 @@ def is_title_a_year(title):
     return re.match(r'^\d{4}$', clean_title) is not None
 
 def extract_title_and_year(title):
-    original_title = title
-    prefixes = [
-        r'^[A-Z]{2,3}\s*[|]\s*', r'^[A-Z]{2,3}\s*[-]\s*', r'^VOD\s*[|]\s*', r'^TV\s*[|]\s*',
-        r'^\d+\.\s*', r'^[A-Z0-9_]+:\s*', r'^[0-9]+\s*[|]\s*', r'^num":\s*\d+,\s*"name":\s*"',
-        r'^[A-Z]{2,3}\s*:\s*'
-    ]
-    clean_title = title
-    for prefix_pattern in prefixes:
-        clean_title = re.sub(prefix_pattern, '', clean_title)
-    clean_title = re.sub(r'^\((\d{4})\)$', r'\1', clean_title.strip())
-    if re.match(r'^\d{4}$', clean_title):
-        log_to_kodi(f"Detected title as a year: {clean_title}")
-        return clean_title, ""
-    year_match = re.search(r'\((\d{4})\)|(?<!\()\b(\d{4})\b', title)
-    year = ""
-    if year_match:
-        year = year_match.group(1) if year_match.group(1) else year_match.group(2)
-    clean_title = title
-    for prefix_pattern in prefixes:
-        clean_title = re.sub(prefix_pattern, '', clean_title)
-    if year:
-        year_pattern_1 = r'\(' + year + r'\).*$'
-        year_pattern_2 = r'\b' + year + r'\b.*$'
-        clean_title = re.sub(year_pattern_1, '', clean_title)
-        if year in clean_title:
-            clean_title = re.sub(year_pattern_2, '', clean_title)
-    suffixes = [r'\s*\|.*$', r'\s*-\s*.*$', r'\s+S\d+E\d+.*$', r'\s*"$']
-    for suffix_pattern in suffixes:
-        clean_title = re.sub(suffix_pattern, '', clean_title)
-    clean_title = re.sub(r'\s+', ' ', clean_title).strip()
-    return clean_title, year
+    # Extract the main title and year from the title string
+    # Example: "Inception (2010)" -> title: "Inception", year: "2010"
+    if '(' in title and ')' in title:
+        year_part = title.split('(')[-1].split(')')[0]
+        if year_part.isdigit():
+            return title.split('(')[0].strip(), year_part
+    return title, ''
 
-def sanitize(name):
-    name = unidecode(name)
-    name = re.sub(r'[<>:"/\\|?*]', '', name)
-    name = re.sub(r'\s+', ' ', name).strip()
-    # Remove any remaining non-ASCII characters
-    name = ''.join(c for c in name if ord(c) < 128)
-    return name
+def create_filename(title, content_type, release_year=None):
+    # Generate a filename based on title, content type, and release year
+    # Example: "Inception", "movie", "2010" -> "Inception (2010).nfo"
+    if release_year:
+        return f"{title} ({release_year}).{content_type}"
+    return f"{title}.{content_type}"
+
+def extract_stream_id_from_url(url):
+    # Extract stream ID from the URL (assumes URL format like "http://example.com/stream/12345")
+    # Example: "http://example.com/stream/12345" -> "12345"
+    parts = url.split('/')
+    if len(parts) > 4:
+        return parts[-1]
+    return ''
+
+def meta_to_nfo(meta, entry_type):
+    # Generate NFO content based on metadata and entry type (movie, episode, etc.)
+    root = Element('movie') if entry_type == 'movie' else Element('episode')
+    # ID
+    tmdb_id = meta.get('id', '')
+    SubElement(root, 'id').text = str(tmdb_id or '')
+    # Unique IDs
+    imdb_id = meta.get('imdb_id', '')
+    tmdb_id = meta.get('tmdb_id', '')
+    tvdb_id = meta.get('tvdb_id', '')
+    if imdb_id:
+        SubElement(root, 'uniqueid', type='imdb').text = imdb_id
+    if tmdb_id:
+        SubElement(root, 'uniqueid', type='tmdb', default='true').text = str(tmdb_id)
+    if tvdb_id:
+        SubElement(root, 'uniqueid', type='tvdb').text = str(tvdb_id)
+    # Genres
+    genres = [g.get('name', '') for g in meta.get('genres', [])]
+    for g in genres:
+        SubElement(root, 'genre').text = g
+    # Credits (writers)
+    writers = [w.get('name') for w in meta.get('crew', []) if w.get('job', '').lower() == 'writer']
+    for w in writers:
+        SubElement(root, 'credits').text = w
+    # Directors
+    directors = [d.get('name') for d in meta.get('crew', []) if d.get('job', '').lower() == 'director']
+    for d in directors:
+        SubElement(root, 'director').text = d
+    # Premiered/year
+    premiered = meta.get('release_date', '') or meta.get('first_air_date', '')
+    SubElement(root, 'premiered').text = premiered
+    SubElement(root, 'year').text = premiered[:4] if premiered else ''
+    SubElement(root, 'aired').text = premiered
+    # Studio
+    studios = [s.get('name', '') for s in meta.get('networks', [])]
+    for s in studios:
+        SubElement(root, 'studio').text = s
+    # Plot
+    SubElement(root, 'plot').text = meta.get('overview', '')
+    # Runtime
+    runtime = meta.get('runtime', 0)
+    SubElement(root, 'runtime').text = str(runtime)
+    # MPAA
+    mpaa = ''
+    for rel in meta.get('content_ratings', {}).get('results', []):
+        if rel.get('iso_3166_1') == 'US':
+            mpaa = rel.get('rating', '')
+    SubElement(root, 'mpaa').text = mpaa
+    # Trailer
+    SubElement(root, 'trailer').text = ''
+    # Fileinfo (placeholder)
+    fileinfo = SubElement(root, 'fileinfo')
+    streamdetails = SubElement(fileinfo, 'streamdetails')
+    video = SubElement(streamdetails, 'video')
+    SubElement(video, 'codec').text = ''
+    SubElement(video, 'aspect').text = ''
+    SubElement(video, 'width').text = ''
+    SubElement(video, 'height').text = ''
+    SubElement(video, 'durationinseconds').text = ''
+    return ElementTree(root).write('utf-8').decode('utf-8')
 
 def remove_non_ascii(obj):
     """Recursively remove non-ASCII characters from all strings in a dict/list/str structure."""
@@ -417,6 +470,488 @@ def filter_entries_that_exist(entries, movies_dir, tvshows_dir):
     return filtered
 
 # ==== END: FILTER ENTRIES ALREADY EXISTING IN FILESYSTEM ====
+
+async def fetch_movie_metadata(title, session, sem: Semaphore):
+    clean_title, year = extract_title_and_year(title)
+    search_query = clean_title
+    is_year_title = is_title_a_year(clean_title)
+    url = 'https://api.themoviedb.org/3/search/movie'
+    params = {'api_key': TMDB_API_KEY, 'query': search_query}
+    if year and not is_year_title:
+        params['year'] = year
+    async with sem:
+        async with session.get(url, params=params, timeout=30) as r:
+            if r.status == 200:
+                data = await r.json()
+                results = data.get('results', [])
+                if results:
+                    movie_id = results[0].get('id')
+                else:
+                    # Fuzzy match fallback
+                    # Try again without year restriction
+                    params.pop('year', None)
+                    async with session.get(url, params=params, timeout=30) as r2:
+                        if r2.status == 200:
+                            data2 = await r2.json()
+                            results2 = data2.get('results', [])
+                            if results2:
+                                # Fuzzy match
+                                choices = {m['title']: m for m in results2 if 'title' in m}
+                                match, score, _ = process.extractOne(clean_title, list(choices.keys()), scorer=fuzz.token_sort_ratio)
+                                if score >= 85:
+                                    movie_id = choices[match]['id']
+                                else:
+                                    return {}
+                            else:
+                                return {}
+                        else:
+                            return {}
+            else:
+                return {}
+    if not movie_id:
+        return {}
+    details_url = f'https://api.themoviedb.org/3/movie/{movie_id}'
+    details_params = {'api_key': TMDB_API_KEY, 'append_to_response': 'credits,external_ids,release_dates'}
+    async with sem:
+        async with session.get(details_url, params=details_params, timeout=30) as r:
+            if r.status == 200:
+                return await r.json()
+            else:
+                return {}
+
+async def fetch_tv_metadata(title, session, sem: Semaphore):
+    from urllib.parse import quote
+
+    clean_title, year = extract_title_and_year(title)
+    search_query = clean_title
+    is_year_title = is_title_a_year(clean_title)
+
+    api_key = TMDB_API_KEY
+    tmdb_bearer = ADDON.getSetting('tmdb_bearer_token') if hasattr(ADDON, 'getSetting') else None
+
+    search_url = 'https://api.themoviedb.org/3/search/tv'
+    search_params = {'query': search_query}
+    if api_key:
+        search_params['api_key'] = api_key
+    if year and not is_year_title:
+        search_params['first_air_date_year'] = year
+
+    headers = {}
+    if tmdb_bearer:
+        headers['Authorization'] = f'Bearer {tmdb_bearer}'
+        search_params.pop('api_key', None)
+
+    async with sem:
+        async with session.get(search_url, params=search_params, headers=headers, timeout=30) as r:
+            if r.status != 200:
+                return {}
+            data = await r.json()
+            results = data.get('results', [])
+            if not results:
+                # Fuzzy match fallback
+                # Try again without year restriction
+                search_params.pop('first_air_date_year', None)
+                async with session.get(search_url, params=search_params, headers=headers, timeout=30) as r2:
+                    if r2.status == 200:
+                        data2 = await r2.json()
+                        results2 = data2.get('results', [])
+                        if results2:
+                            choices = {m['name']: m for m in results2 if 'name' in m}
+                            match, score, _ = process.extractOne(clean_title, list(choices.keys()), scorer=fuzz.token_sort_ratio)
+                            if score >= 85:
+                                tmdb_id = choices[match]['id']
+                            else:
+                                return {}
+                        else:
+                            return {}
+                    else:
+                        return {}
+            else:
+                tmdb_id = results[0].get('id')
+
+    if not tmdb_id:
+        return {}
+
+    details_url = f'https://api.themoviedb.org/3/tv/{tmdb_id}'
+    details_params = {'append_to_response': 'credits,external_ids,content_ratings'}
+    if api_key and not tmdb_bearer:
+        details_params['api_key'] = api_key
+
+    headers = {}
+    if tmdb_bearer:
+        headers['Authorization'] = f'Bearer {tmdb_bearer}'
+        details_params.pop('api_key', None)
+
+    async with sem:
+        async with session.get(details_url, params=details_params, headers=headers, timeout=30) as r:
+            if r.status != 200:
+                return {}
+            meta = await r.json()
+            return meta
+
+async def fetch_episode_metadata(tv_id, season, episode, session, sem):
+    api_key = TMDB_API_KEY
+    tmdb_bearer = ADDON.getSetting('tmdb_bearer_token') if hasattr(ADDON, 'getSetting') else None
+
+    url = f'https://api.themoviedb.org/3/tv/{tv_id}/season/{season}/episode/{episode}'
+    # Add all possible metadata fields for episode NFO
+    params = {'append_to_response': 'credits,external_ids,images,content_ratings'}
+    if api_key and not tmdb_bearer:
+        params['api_key'] = api_key
+
+    headers = {}
+    if tmdb_bearer:
+        headers['Authorization'] = f'Bearer {tmdb_bearer}'
+        params.pop('api_key', None)
+
+    async with sem:
+        async with session.get(url, params=params, headers=headers, timeout=30) as r:
+            if r.status != 200:
+                return {}
+            return await r.json()
+
+def meta_to_nfo(meta, entry_type):
+    from xml.etree.ElementTree import Element, SubElement, tostring
+
+    meta = remove_non_ascii(meta)
+    if entry_type == 'movie':
+        root = Element('movie')
+        SubElement(root, 'title').text = meta.get('title', '')
+        SubElement(root, 'originaltitle').text = meta.get('original_title', meta.get('title', ''))
+        sorttitle = meta.get('title', '')
+        if meta.get('belongs_to_collection'):
+            sorttitle = meta['belongs_to_collection'].get('name', sorttitle)
+        SubElement(root, 'sorttitle').text = sorttitle
+        ratings = SubElement(root, 'ratings')
+        imdb_id = meta.get('external_ids', {}).get('imdb_id')
+        if imdb_id:
+            rating = SubElement(ratings, 'rating', name='imdb', max='10', default='true')
+            SubElement(rating, 'value').text = str(meta.get('vote_average', ''))
+            SubElement(rating, 'votes').text = str(meta.get('vote_count', ''))
+        rating_tmdb = SubElement(ratings, 'rating', name='themoviedb', max='10')
+        SubElement(rating_tmdb, 'value').text = str(meta.get('vote_average', ''))
+        SubElement(rating_tmdb, 'votes').text = str(meta.get('vote_count', ''))
+        rating_trakt = SubElement(ratings, 'rating', name='trakt', max='10')
+        SubElement(rating_trakt, 'value').text = ''
+        SubElement(rating_trakt, 'votes').text = ''
+        SubElement(root, 'userrating').text = str(meta.get('vote_average', ''))
+        SubElement(root, 'top250').text = '0'
+        SubElement(root, 'outline').text = ''
+        SubElement(root, 'plot').text = meta.get('overview', '')
+        SubElement(root, 'tagline').text = meta.get('tagline', '')
+        SubElement(root, 'runtime').text = str(meta.get('runtime', ''))
+        poster_path = meta.get('poster_path')
+        backdrop_path = meta.get('backdrop_path')
+        if poster_path:
+            SubElement(root, 'thumb', spoof='', cache='', aspect='poster', preview=f"https://image.tmdb.org/t/p/original{poster_path}").text = f"https://image.tmdb.org/t/p/original{poster_path}"
+        if backdrop_path:
+            SubElement(root, 'thumb', spoof='', cache='', aspect='landscape', preview=f"https://image.tmdb.org/t/p/original{backdrop_path}").text = f"https://image.tmdb.org/t/p/original{backdrop_path}"
+        if backdrop_path:
+            fanart = SubElement(root, 'fanart')
+            SubElement(fanart, 'thumb', colors='', preview=f"https://image.tmdb.org/t/p/w780{backdrop_path}").text = f"https://image.tmdb.org/t/p/original{backdrop_path}"
+        mpaa = ''
+        for rel in meta.get('release_dates', {}).get('results', []):
+            if rel.get('iso_3166_1') == 'US':
+                for r in rel.get('release_dates', []):
+                    if r.get('certification'):
+                        mpaa = r.get('certification')
+                        break
+        SubElement(root, 'mpaa').text = mpaa
+        SubElement(root, 'playcount').text = '0'
+        SubElement(root, 'lastplayed').text = ''
+        SubElement(root, 'id').text = str(meta.get('id', ''))
+        if imdb_id:
+            SubElement(root, 'uniqueid', type='imdb').text = imdb_id
+        SubElement(root, 'uniqueid', type='tmdb', default='true').text = str(meta.get('id', ''))
+        genres = meta.get('genres', [])
+        if genres:
+            for g in genres:
+                SubElement(root, 'genre').text = g.get('name', '')
+        countries = meta.get('production_countries', [])
+        for c in countries:
+            SubElement(root, 'country').text = c.get('name', '')
+        if meta.get('belongs_to_collection'):
+            set_el = SubElement(root, 'set')
+            SubElement(set_el, 'name').text = meta['belongs_to_collection'].get('name', '')
+            SubElement(set_el, 'overview').text = ''
+        crew = meta.get('credits', {}).get('crew', [])
+        writers = [w.get('name') for w in crew if w.get('job', '').lower() == 'writer']
+        for w in writers:
+            SubElement(root, 'credits').text = w
+        directors = [d.get('name') for d in crew if d.get('job', '').lower() == 'director']
+        for d in directors:
+            SubElement(root, 'director').text = d
+        SubElement(root, 'premiered').text = meta.get('release_date', '')
+        SubElement(root, 'year').text = (meta.get('release_date') or '')[:4]
+        SubElement(root, 'status').text = ''
+        SubElement(root, 'code').text = ''
+        SubElement(root, 'aired').text = ''
+        studios = meta.get('production_companies', [])
+        for s in studios:
+            SubElement(root, 'studio').text = s.get('name', '')
+        SubElement(root, 'trailer').text = ''
+        cast = meta.get('credits', {}).get('cast', [])
+        for idx, actor in enumerate(cast):
+            actor_el = SubElement(root, 'actor')
+            SubElement(actor_el, 'name').text = actor.get('name', '')
+            SubElement(actor_el, 'role').text = actor.get('character', '')
+            SubElement(actor_el, 'order').text = str(idx)
+            if actor.get('profile_path'):
+                SubElement(actor_el, 'thumb').text = f"https://image.tmdb.org/t/p/original{actor['profile_path']}"
+    else:
+        root = Element('tvshow')
+        SubElement(root, 'title').text = meta.get('name', '')
+        SubElement(root, 'originaltitle').text = meta.get('original_name', meta.get('name', ''))
+        SubElement(root, 'showtitle').text = meta.get('name', '')
+        # Ratings
+        ratings = SubElement(root, 'ratings')
+        imdb_id = meta.get('external_ids', {}).get('imdb_id')
+        tvdb_id = meta.get('external_ids', {}).get('tvdb_id')
+        tmdb_id = meta.get('id')
+        # IMDB rating (if available)
+        rating_imdb = SubElement(ratings, 'rating', name='imdb', max='10', default='true')
+        SubElement(rating_imdb, 'value').text = ''
+        SubElement(rating_imdb, 'votes').text = ''
+        # TMDB rating
+        rating_tmdb = SubElement(ratings, 'rating', name='tmdb', max='10')
+        SubElement(rating_tmdb, 'value').text = str(meta.get('vote_average', ''))
+        SubElement(rating_tmdb, 'votes').text = str(meta.get('vote_count', ''))
+        # Trakt rating (placeholder)
+        rating_trakt = SubElement(ratings, 'rating', name='trakt', max='10')
+        SubElement(rating_trakt, 'value').text = ''
+        SubElement(rating_trakt, 'votes').text = ''
+        SubElement(root, 'userrating').text = str(meta.get('vote_average', ''))
+        SubElement(root, 'top250').text = '0'
+        # Season/Episode counts
+        SubElement(root, 'season').text = str(meta.get('number_of_seasons', ''))
+        SubElement(root, 'episode').text = str(meta.get('number_of_episodes', ''))
+        SubElement(root, 'displayseason').text = '-1'
+        SubElement(root, 'displayepisode').text = '-1'
+        SubElement(root, 'outline').text = ''
+        SubElement(root, 'plot').text = meta.get('overview', '')
+        SubElement(root, 'tagline').text = meta.get('tagline', '')
+        SubElement(root, 'runtime').text = str(meta.get('episode_run_time', ['0'])[0] if meta.get('episode_run_time') else '0')
+        # Thumbs (main images)
+        poster_path = meta.get('poster_path')
+        backdrop_path = meta.get('backdrop_path')
+        logo_path = ''
+        if meta.get('images'):
+            logos = meta['images'].get('logos', [])
+            if logos:
+                logo_path = logos[0].get('file_path', '')
+        if backdrop_path:
+            SubElement(root, 'thumb', spoof='', cache='', aspect='landscape', preview=f"https://image.tmdb.org/t/p/w780{backdrop_path}").text = f"https://image.tmdb.org/t/p/original{backdrop_path}"
+        if logo_path:
+            SubElement(root, 'thumb', spoof='', cache='', aspect='logos', preview=f"https://image.tmdb.org/t/p/w780{logo_path}").text = f"https://image.tmdb.org/t/p/original{logo_path}"
+        if poster_path:
+            SubElement(root, 'thumb', spoof='', cache='', aspect='poster', preview=f"https://image.tmdb.org/t/p/w780{poster_path}").text = f"https://image.tmdb.org/t/p/original{poster_path}"
+        # Season posters
+        for season in meta.get('seasons', []):
+            s_poster = season.get('poster_path')
+            s_num = season.get('season_number')
+            if s_poster and s_num is not None:
+                SubElement(root, 'thumb', spoof='', cache='', season=str(s_num), type='season', aspect='poster', preview=f"https://image.tmdb.org/t/p/w780{s_poster}").text = f"https://image.tmdb.org/t/p/original{s_poster}"
+        # Fanart (multiple images)
+        fanart = SubElement(root, 'fanart')
+        fanart_paths = []
+        if meta.get('images'):
+            fanart_paths = [img['file_path'] for img in meta['images'].get('backdrops', [])[:2] if img.get('file_path')]
+        elif backdrop_path:
+            fanart_paths = [backdrop_path]
+        for fpath in fanart_paths:
+            SubElement(fanart, 'thumb', colors='', preview=f"https://image.tmdb.org/t/p/original{fpath}").text = f"https://image.tmdb.org/t/p/original{fpath}"
+        # MPAA/content rating
+        mpaa = ''
+        for rel in meta.get('content_ratings', {}).get('results', []):
+            if rel.get('iso_3166_1') == 'US' and rel.get('rating'):
+                mpaa = f"US:{rel['rating']}"
+                break
+            elif rel.get('iso_3166_1') and rel.get('rating'):
+                mpaa = f"{rel['iso_3166_1']}:{rel['rating']}"
+        SubElement(root, 'mpaa').text = mpaa
+        SubElement(root, 'playcount').text = '0'
+        SubElement(root, 'lastplayed').text = ''
+        SubElement(root, 'id').text = str(tmdb_id or '')
+        # Unique IDs
+        if imdb_id:
+            SubElement(root, 'uniqueid', type='imdb').text = imdb_id
+        if tmdb_id:
+            SubElement(root, 'uniqueid', type='tmdb', default='true').text = str(tmdb_id)
+        if tvdb_id:
+            SubElement(root, 'uniqueid', type='tvdb').text = str(tvdb_id)
+        # Genres
+        genres = meta.get('genres', [])
+        if genres:
+            for g in genres:
+                SubElement(root, 'genre').text = g.get('name', '')
+        # Premiered/year
+        premiered = meta.get('first_air_date', '')
+        SubElement(root, 'premiered').text = premiered
+        SubElement(root, 'year').text = premiered[:4] if premiered else ''
+        SubElement(root, 'status').text = meta.get('status', '')
+        SubElement(root, 'code').text = ''
+        SubElement(root, 'aired').text = ''
+        # Studios
+        studios = meta.get('networks', [])
+        for s in studios:
+            SubElement(root, 'studio').text = s.get('name', '')
+        # Trailer (placeholder)
+        SubElement(root, 'trailer').text = ''
+        # Actors
+        cast = meta.get('credits', {}).get('cast', [])
+        for idx, actor in enumerate(cast):
+            actor_el = SubElement(root, 'actor')
+            SubElement(actor_el, 'name').text = actor.get('name', '')
+            SubElement(actor_el, 'role').text = actor.get('character', '')
+            SubElement(actor_el, 'order').text = str(idx)
+            if actor.get('profile_path'):
+                SubElement(actor_el, 'thumb').text = f"https://image.tmdb.org/t/p/original{actor['profile_path']}"
+        # Named seasons
+        for season in meta.get('seasons', []):
+            if season.get('season_number') and season.get('name'):
+                namedseason = SubElement(root, 'namedseason')
+                namedseason.set('number', str(season['season_number']))
+                namedseason.text = season['name']
+        # Resume
+        resume = SubElement(root, 'resume')
+        SubElement(resume, 'position').text = '0.000000'
+        SubElement(resume, 'total').text = '0.000000'
+        # Date added (placeholder: current date)
+        from datetime import datetime
+        SubElement(root, 'dateadded').text = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>\n' + tostring(root, encoding='utf-8').decode()
+
+def episode_meta_to_nfo(meta, season=None, episode=None, show_meta=None):
+    from xml.etree.ElementTree import Element, SubElement, tostring
+    from datetime import datetime
+
+    meta = remove_non_ascii(meta)
+    if show_meta:
+        show_meta = remove_non_ascii(show_meta)
+    root = Element('episodedetails')
+    SubElement(root, 'title').text = meta.get('name', '') or meta.get('title', '')
+    # Show title from show_meta if available
+    showtitle = ''
+    if show_meta and show_meta.get('name'):
+        showtitle = show_meta.get('name')
+    elif meta.get('show', {}).get('name'):
+        showtitle = meta['show']['name']
+    SubElement(root, 'showtitle').text = showtitle
+    # Ratings
+    ratings = SubElement(root, 'ratings')
+    imdb_id = meta.get('external_ids', {}).get('imdb_id')
+    tmdb_id = meta.get('id')
+    tvdb_id = meta.get('external_ids', {}).get('tvdb_id')
+    # IMDB rating (if available)
+    rating_imdb = SubElement(ratings, 'rating', name='imdb', max='10', default='true')
+    SubElement(rating_imdb, 'value').text = str(meta.get('vote_average', ''))
+    SubElement(rating_imdb, 'votes').text = str(meta.get('vote_count', ''))
+    # TMDB rating
+    rating_tmdb = SubElement(ratings, 'rating', name='tmdb', max='10')
+    SubElement(rating_tmdb, 'value').text = str(meta.get('vote_average', ''))
+    SubElement(rating_tmdb, 'votes').text = str(meta.get('vote_count', ''))
+    # Trakt rating (placeholder)
+    rating_trakt = SubElement(ratings, 'rating', name='trakt', max='10')
+    SubElement(rating_trakt, 'value').text = ''
+    SubElement(rating_trakt, 'votes').text = ''
+    SubElement(root, 'userrating').text = '0'
+    SubElement(root, 'top250').text = '0'
+    if season is not None:
+        SubElement(root, 'season').text = str(season)
+    if episode is not None:
+        SubElement(root, 'episode').text = str(episode)
+    SubElement(root, 'displayseason').text = '-1'
+    SubElement(root, 'displayepisode').text = '-1'
+    SubElement(root, 'outline').text = ''
+    SubElement(root, 'plot').text = meta.get('overview', '')
+    SubElement(root, 'tagline').text = ''
+    # Runtime (in minutes)
+    runtime = meta.get('runtime') or meta.get('episode_run_time') or 0
+    if isinstance(runtime, list):
+        runtime = runtime[0] if runtime else 0
+    SubElement(root, 'runtime').text = str(runtime)
+    # Thumbs (main images)
+    thumbs = []
+    if meta.get('still_path'):
+        thumbs.append(meta['still_path'])
+    if meta.get('images'):
+        thumbs += [img['file_path'] for img in meta['images'].get('stills', []) if img.get('file_path')]
+    for t in thumbs[:2]:
+        SubElement(root, 'thumb', spoof='', cache='', aspect='thumb', preview=f"https://image.tmdb.org/t/p/w780{t}").text = f"https://image.tmdb.org/t/p/original{t}"
+    # MPAA/content rating
+    mpaa = ''
+    for rel in meta.get('content_ratings', {}).get('results', []):
+        if rel.get('iso_3166_1') == 'US' and rel.get('rating'):
+            mpaa = f"US:{rel['rating']}"
+            break
+        elif rel.get('iso_3166_1') and rel.get('rating'):
+            mpaa = f"{rel['iso_3166_1']}:{rel['rating']}"
+    SubElement(root, 'mpaa').text = mpaa
+    SubElement(root, 'playcount').text = '0'
+    SubElement(root, 'lastplayed').text = ''
+    SubElement(root, 'id').text = str(tmdb_id or '')
+    # Unique IDs
+    if imdb_id:
+        SubElement(root, 'uniqueid', type='imdb').text = imdb_id
+    if tmdb_id:
+        SubElement(root, 'uniqueid', type='tmdb', default='true').text = str(tmdb_id)
+    if tvdb_id:
+        SubElement(root, 'uniqueid', type='tvdb').text = str(tvdb_id)
+    # Genres (from show_meta if available)
+    genres = []
+    if show_meta and show_meta.get('genres'):
+        genres = [g.get('name', '') for g in show_meta['genres']]
+    for g in genres:
+        SubElement(root, 'genre').text = g
+    # Credits (writers)
+    writers = meta.get('crew', [])
+    credits = [w.get('name') for w in writers if w.get('job', '').lower() == 'writer']
+    for w in credits:
+        SubElement(root, 'credits').text = w
+    # Directors
+    directors = [d.get('name') for d in writers if d.get('job', '').lower() == 'director']
+    for d in directors:
+        SubElement(root, 'director').text = d
+    # Premiered/year
+    premiered = meta.get('air_date', '') or meta.get('first_air_date', '')
+    SubElement(root, 'premiered').text = premiered
+    SubElement(root, 'year').text = premiered[:4] if premiered else ''
+    SubElement(root, 'status').text = ''
+    SubElement(root, 'code').text = ''
+    SubElement(root, 'aired').text = premiered
+    # Studio (from show_meta if available)
+    studios = []
+    if show_meta and show_meta.get('networks'):
+        studios = [s.get('name', '') for s in show_meta['networks']]
+    for s in studios:
+        SubElement(root, 'studio').text = s
+    # Trailer (placeholder)
+    SubElement(root, 'trailer').text = ''
+    # Actors
+    cast = meta.get('credits', {}).get('cast', [])
+    for idx, actor in enumerate(cast):
+        actor_el = SubElement(root, 'actor')
+        SubElement(actor_el, 'name').text = actor.get('name', '')
+        SubElement(actor_el, 'role').text = actor.get('character', '')
+        SubElement(actor_el, 'order').text = str(idx)
+        if actor.get('profile_path'):
+            SubElement(actor_el, 'thumb').text = f"https://image.tmdb.org/t/p/original{actor['profile_path']}"
+    # Named seasons
+    for season in meta.get('seasons', []):
+        if season.get('season_number') and season.get('name'):
+            namedseason = SubElement(root, 'namedseason')
+            namedseason.set('number', str(season['season_number']))
+            namedseason.text = season['name']
+    # Resume
+    resume = SubElement(root, 'resume')
+    SubElement(resume, 'position').text = '0.000000'
+    SubElement(resume, 'total').text = '0.000000'
+    # Date added (placeholder: current date)
+    from datetime import datetime
+    SubElement(root, 'dateadded').text = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>\n' + tostring(root, encoding='utf-8').decode()
 
 async def fetch_movie_metadata(title, session, sem: Semaphore):
     clean_title, year = extract_title_and_year(title)
