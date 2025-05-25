@@ -13,8 +13,4 @@
     <category label="TMDb API">
         <setting id="tmdb_api_key" type="text" label="API Key" default="sign up for free at https://www.themoviedb.org/" />
     </category>
-    <category label="Update Interval">
-        <setting id="update_interval" type="number" label="Days between updates" default="1" />
-        <setting id="update_time" type="text" label="Update time" default="00:00" />
-    </category>
 </settings>

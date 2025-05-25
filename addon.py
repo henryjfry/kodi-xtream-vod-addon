@@ -18,6 +18,7 @@ from xml.etree.ElementTree import Element, SubElement, ElementTree
 from datetime import datetime # Import datetime for dateadded in NFOs
 import time # Import time for runtime calculation
 import sys # Import sys for atexit and sys.exit
+import atexit # Import atexit for registering cleanup functions
 
 # Kodi settings
 ADDON = xbmcaddon.Addon()
@@ -268,38 +269,67 @@ def is_title_a_year(title):
 
 def extract_title_and_year(title):
     """
-    Extracts the main title and year from a string like "Movie Title (YYYY)".
-    Returns (title, year).
+    Extracts the main title and year from a string, handling various prefixes,
+    suffixes, and year formats. This version is from old-addon.py.
     """
-    if '(' in title and ')' in title:
-        year_part = title.split('(')[-1].split(')')[0]
-        if year_part.isdigit():
-            return title.split('(')[0].strip(), year_part
-    return title, ''
+    original_title = title
+    prefixes = [
+        r'^[A-Z]{2,3}\s*[|]\s*', r'^[A-Z]{2,3}\s*[-]\s*', r'^VOD\s*[|]\s*', r'^TV\s*[|]\s*',
+        r'^\d+\.\s*', r'^[A-Z0-9_]+:\s*', r'^[0-9]+\s*[|]\s*', r'^num":\s*\d+,\s*"name":\s*"',
+        r'^[A-Z]{2,3}\s*:\s*'
+    ]
+    clean_title = title
+    for prefix_pattern in prefixes:
+        clean_title = re.sub(prefix_pattern, '', clean_title)
+    clean_title = re.sub(r'^\((\d{4})\)$', r'\1', clean_title.strip())
+    if re.match(r'^\d{4}$', clean_title):
+        log_to_kodi(f"Detected title as a year: {clean_title}")
+        return clean_title, ""
+    year_match = re.search(r'\((\d{4})\)|(?<!\()\b(\d{4})\b', title)
+    year = ""
+    if year_match:
+        year = year_match.group(1) if year_match.group(1) else year_match.group(2)
+    clean_title = title
+    for prefix_pattern in prefixes:
+        clean_title = re.sub(prefix_pattern, '', clean_title)
+    if year:
+        year_pattern_1 = r'\(' + year + r'\).*$'
+        year_pattern_2 = r'\b' + year + r'\b.*$'
+        clean_title = re.sub(year_pattern_1, '', clean_title)
+        if year in clean_title:
+            clean_title = re.sub(year_pattern_2, '', clean_title)
+    suffixes = [r'\s*\|.*$', r'\s*-\s*.*$', r'\s+S\d+E\d+.*$', r'\s*"$']
+    for suffix_pattern in suffixes:
+        clean_title = re.sub(suffix_pattern, '', clean_title)
+    clean_title = re.sub(r'\s+', ' ', clean_title).strip()
+    return clean_title, year
 
 def create_filename(title, content_type, release_year=None):
     """
     Generates a clean filename for STRM files.
-    Removes prefixes, sanitizes, appends year if available, and ensures a single .strm extension.
+    This version is from old-addon.py.
     """
-    # Remove the prefix like "4K-EN - " by splitting on the first " - "
-    if " - " in title:
-        title = title.split(" - ", 1)[-1]
-
-    # Remove any existing .strm extension before sanitizing and adding it back
-    if title.lower().endswith('.strm'):
-        title = title[:-5] # Remove .strm
-
-    # Sanitize the title (this will also remove leading numbers like "02. ")
-    title = sanitize(title)
-
-    # Append the release year if available and not already part of the title
-    if release_year and f"({release_year})" not in title:
-        title = f"{title} ({release_year})"
-
-    # Add the .strm extension
-    title += '.strm'
-    return title
+    clean_title, year_from_title = extract_title_and_year(title)
+    year = release_year if release_year else year_from_title
+    # Always strip parentheses from clean_title if it's just a year
+    if is_title_a_year(clean_title):
+        clean_title = clean_title.strip('()')
+        if year and clean_title != year:
+            filename = f"{clean_title} {year}"
+        else:
+            filename = clean_title
+    else:
+        if year:
+            filename = f"{clean_title} ({year})"
+        else:
+            filename = clean_title
+    filename = sanitize(filename)
+    # Prevent filenames like (2012) or empty
+    if filename.startswith('(') and filename.endswith(')') and len(filename) == 6:
+        filename = filename.strip('()')
+    if not filename:
+        filename = 'Unknown'
+    return filename
 
 def extract_stream_id_from_url(url):
     """Extracts the stream ID from an M3U URL."""
@@ -675,73 +705,65 @@ async def fetch_movie_metadata(title, session, sem: Semaphore, tmdb_id_from_json
                 log_to_kodi(f"Failed to fetch movie details for TMDB ID: {movie_id}. Status: {r.status}")
                 return {}
 
-async def fetch_tv_metadata(title, session, sem: Semaphore, tmdb_id_from_json=None):
+async def fetch_tv_metadata(title, session, sem: Semaphore):
     """
-    Fetches TV show metadata from TMDB. Prioritizes using tmdb_id_from_json if provided,
-    otherwise falls back to searching by title with fuzzy matching.
+    Fetches TV show metadata from TMDB. This version is from old-addon.py,
+    always performing a search by title.
     """
-    tmdb_id = None
-    if tmdb_id_from_json:
-        tmdb_id = tmdb_id_from_json
-        log_to_kodi(f"Fetching TV metadata using TMDB ID from JSON: {tmdb_id}")
-    else:
-        clean_title, year = extract_title_and_year(title)
-        search_query = clean_title
-        is_year_title = is_title_a_year(clean_title)
+    from urllib.parse import quote
 
-        api_key = TMDB_API_KEY
-        tmdb_bearer = ADDON.getSetting('tmdb_bearer_token') if hasattr(ADDON, 'getSetting') else None
+    clean_title, year = extract_title_and_year(title)
+    search_query = clean_title
+    is_year_title = is_title_a_year(clean_title)
 
-        search_url = 'https://api.themoviedb.org/3/search/tv'
-        search_params = {'query': search_query}
-        if api_key:
-            search_params['api_key'] = api_key
-        if year and not is_year_title:
-            search_params['first_air_date_year'] = year
+    api_key = TMDB_API_KEY
+    tmdb_bearer = ADDON.getSetting('tmdb_bearer_token') if hasattr(ADDON, 'getSetting') else None
 
-        headers = {}
-        if tmdb_bearer:
-            headers['Authorization'] = f'Bearer {tmdb_bearer}'
-            search_params.pop('api_key', None) # Remove api_key if bearer token is used
+    search_url = 'https://api.themoviedb.org/3/search/tv'
+    search_params = {'query': search_query}
+    if api_key:
+        search_params['api_key'] = api_key
+    if year and not is_year_title:
+        search_params['first_air_date_year'] = year
 
-        async with sem:
-            async with session.get(search_url, params=search_params, headers=headers, timeout=30) as r:
-                if r.status != 200:
-                    log_to_kodi(f"Failed to fetch TV search results for: {clean_title}. Status: {r.status}")
-                    return {}
-                data = await r.json()
-                results = data.get('results', [])
-                if not results:
-                    # Fuzzy match fallback: Try again without year restriction
-                    search_params.pop('first_air_date_year', None)
-                    async with session.get(search_url, params=search_params, headers=headers, timeout=30) as r2:
-                        if r2.status == 200:
-                            data2 = await r2.json()
-                            results2 = data2.get('results', [])
-                            if results2:
-                                choices = {m['name']: m for m in results2 if 'name' in m}
-                                match, score, _ = process.extractOne(clean_title, list(choices.keys()), scorer=fuzz.token_sort_ratio)
-                                if score >= 85:
-                                    tmdb_id = choices[match]['id']
-                                else:
-                                    log_to_kodi(f"No good fuzzy match for TV title: {clean_title}")
-                                    return {}
+    headers = {}
+    if tmdb_bearer:
+        headers['Authorization'] = f'Bearer {tmdb_bearer}'
+        search_params.pop('api_key', None)
+
+    async with sem:
+        async with session.get(search_url, params=search_params, headers=headers, timeout=30) as r:
+            if r.status != 200:
+                return {}
+            data = await r.json()
+            results = data.get('results', [])
+            if not results:
+                # Fuzzy match fallback
+                # Try again without year restriction
+                search_params.pop('first_air_date_year', None)
+                async with session.get(search_url, params=search_params, headers=headers, timeout=30) as r2:
+                    if r2.status == 200:
+                        data2 = await r2.json()
+                        results2 = data2.get('results', [])
+                        if results2:
+                            choices = {m['name']: m for m in results2 if 'name' in m}
+                            match, score, _ = process.extractOne(clean_title, list(choices.keys()), scorer=fuzz.token_sort_ratio)
+                            if score >= 85:
+                                tmdb_id = choices[match]['id']
                             else:
-                                log_to_kodi(f"No search results for TV title: {clean_title} even after removing year.")
                                 return {}
                         else:
-                            log_to_kodi(f"Failed to fetch TV search results without year for: {clean_title}. Status: {r2.status}")
                             return {}
-                else:
-                    tmdb_id = results[0].get('id')
+                    else:
+                        return {}
+            else:
+                tmdb_id = results[0].get('id')
 
     if not tmdb_id:
-        log_to_kodi(f"No TMDB ID found for TV show: {title} (after search or from JSON).")
         return {}
 
-    # Fetch full details for the matched TV show
     details_url = f'https://api.themoviedb.org/3/tv/{tmdb_id}'
-    details_params = {'append_to_response': 'credits,external_ids,content_ratings,images'}
+    details_params = {'append_to_response': 'credits,external_ids,content_ratings,images'} # Added images for addon.py
     if api_key and not tmdb_bearer:
         details_params['api_key'] = api_key
 
@@ -753,10 +775,8 @@ async def fetch_tv_metadata(title, session, sem: Semaphore, tmdb_id_from_json=No
     async with sem:
         async with session.get(details_url, params=details_params, headers=headers, timeout=30) as r:
             if r.status != 200:
-                log_to_kodi(f"Failed to fetch TV details for TMDB ID: {tmdb_id}. Status: {r.status}")
                 return {}
             meta = await r.json()
-            log_to_kodi(f"Successfully fetched TV details for TMDB ID: {tmdb_id}")
             return meta
 
 async def fetch_episode_metadata(tv_id, season, episode, session, sem):
@@ -1257,25 +1277,25 @@ async def handle_entry(entry, directory, aio_sess, sem, file_sem):
             log_to_kodi(f"NFO file already exists, skipping: {nfo_path}")
         return
 
-    # Handle TV shows
-    # Pass the tmdb_id_from_json if available in the entry
-    meta = await fetch_tv_metadata(entry['title'], aio_sess, sem, entry.get('tmdb_id'))
-    tmdb_id_for_filename = '' # Initialize for filename generation
-
+    # Handle TV shows (restored from old-addon.py logic)
+    meta = await fetch_tv_metadata(entry['title'], aio_sess, sem)
     if meta and meta.get('name'):
-        show_name = sanitize(meta['name']) # Sanitize show name from metadata
+        show_name = sanitize(meta['name'])
         year = (meta.get('first_air_date', '')[:4] if meta.get('first_air_date') else '')
-        tmdb_id_for_filename = meta.get('id') # Use TMDB ID from fetched metadata for filename
-        log_to_kodi(f"Using TMDB metadata show_name/year: {show_name}/{year} (TMDB ID: {tmdb_id_for_filename})")
+        tmdb_id = str(meta.get('id', '')) # Ensure TMDB ID is a string
+        log_to_kodi(f"Using TMDB metadata show_name/year: {show_name}/{year}")
     else:
-        log_to_kodi(f"TMDB metadata not found for TV entry: {entry['title']}. Using fallback.")
         # Fallback: extract show name and year from the title, but remove season/episode info
         show_name, year = extract_title_and_year(entry['title'])
-        show_name = sanitize(show_name) # Sanitize fallback show name
-        # Remove trailing Sxx Exx or similar patterns from show_name to get clean show folder name
-        show_name = re.sub(r'[ \-]*[Ss]\d{1,2}[ \-]*[Ee]\d{1,2}.*$', '', show_name, flags=re.IGNORECASE).strip()
-        # tmdb_id_for_filename remains empty if no metadata found.
-        log_to_kodi(f"Fallback show_name/year: {show_name}/{year}")
+        show_name = sanitize(show_name)
+        # Remove trailing Sxx Exx or similar patterns from show_name
+        show_name = re.sub(r'[ \-]*[Ss]\d{1,2}[ \-]*[Ee]\d{1,2}.*$', '', show_name).strip()
+        tmdb_id = ''
+        log_to_kodi(f"TMDB metadata not found. Using fallback show_name/year: {show_name}/{year}")
+
+    season, episode = extract_season_episode(entry['original_title'])
+    if not (season and episode):
+        season, episode = extract_season_episode(entry['safe'])
 
     if year:
         show_folder = os.path.join(TVSHOWS_DIR, f"{show_name} ({year})")
@@ -1297,18 +1317,13 @@ async def handle_entry(entry, directory, aio_sess, sem, file_sem):
     elif meta:
         log_to_kodi(f"TV show NFO file already exists, skipping: {tvshow_nfo_path}")
 
-    season, episode = extract_season_episode(entry['original_title'])
-    if not (season and episode):
-        # If not found in original title, try the 'safe' title (which is already sanitized)
-        season, episode = extract_season_episode(entry['safe'])
-
     if season is not None and episode is not None:
         season_folder = os.path.join(show_folder, format_season_folder(season))
         os.makedirs(season_folder, exist_ok=True)
 
         # Generate episode filename using kodi_tv_episode_filename
-        # show_name is already sanitized at this point
-        episode_filename = kodi_tv_episode_filename(show_name, year, season, episode, "strm", tmdb_id_for_filename)
+        episode_filename = kodi_tv_episode_filename(show_name, year, season, episode, "strm", tmdb_id)
+        episode_filename = sanitize(episode_filename) # Explicitly sanitize after construction
         strm_path = os.path.join(season_folder, episode_filename)
         # NFO filename for episode
         nfo_filename = os.path.splitext(episode_filename)[0] + ".nfo"
@@ -1345,9 +1360,9 @@ async def handle_entry(entry, directory, aio_sess, sem, file_sem):
         # This block handles TV entries where season/episode could not be extracted.
         # It creates a generic STRM and NFO directly in the show folder.
         log_to_kodi(f"Could not extract season/episode for TV entry: {entry['title']}. Creating fallback STRM/NFO.")
-        fallback_fn = create_filename(show_name, entry['type'], year)
-        strm_path = os.path.join(show_folder, fallback_fn)
-        nfo_path = os.path.join(show_folder, os.path.splitext(fallback_fn)[0] + ".nfo")
+        fallback_fn = sanitize(show_folder) # Fallback filename from old-addon.py
+        strm_path = os.path.join(show_folder, f"{fallback_fn}.strm")
+        nfo_path = os.path.join(show_folder, f"{fallback_fn}.nfo")
 
         if not os.path.exists(strm_path):
             try:
@@ -1370,44 +1385,6 @@ async def handle_entry(entry, directory, aio_sess, sem, file_sem):
                 log_to_kodi(f"Failed to write fallback NFO file at {nfo_path}: {e}")
         elif meta:
             log_to_kodi(f"Fallback NFO file already exists, skipping: {nfo_path}")
-
-async def process_sports_entries(sports_entries, sport_dir, file_sem):
-    """
-    For each unique sport_category, create a folder in sport_dir.
-    For each entry, create a .strm file in the correct folder, named after tvg-name with 'SOC - ' removed.
-    No .nfo files are created for sports entries.
-    """
-    log_to_kodi(f"Processing {len(sports_entries)} sports entries. sport_dir={sport_dir}")
-    if not sports_entries:
-        log_to_kodi("No sports entries to process.")
-        return
-
-    for entry in sports_entries:
-        log_to_kodi(f"Handling sport entry: {entry.get('title', 'N/A')}")
-        category = entry.get('sport_category', 'Other')
-        folder = os.path.join(sport_dir, sanitize(category))
-        ensure_dir(folder)
-
-        # Remove 'SOC - ' from tvg_name if present, then sanitize
-        filename = entry.get('tvg_name', entry['title'])
-        filename = re.sub(r'^SOC\s*-\s*', '', filename, flags=re.IGNORECASE)
-        filename = sanitize(filename)
-        if not filename:
-            filename = 'Unknown'
-
-        strm_path = os.path.join(folder, f"{filename}.strm")
-        log_to_kodi(f"Attempting to create STRM file: {strm_path}")
-
-        if not os.path.exists(strm_path):
-            try:
-                async with file_sem:
-                    async with aiofiles.open(strm_path, 'w') as f:
-                        await f.write(entry['url'])
-                    log_to_kodi(f"Created sports STRM: {strm_path}")
-            except Exception as e:
-                log_to_kodi(f"Failed to write sports STRM file at {strm_path}: {e}")
-        else:
-            log_to_kodi(f"Sports STRM already exists, skipping: {strm_path}")
 
 async def update_library():
     """Triggers a Kodi video library update."""
@@ -1437,7 +1414,6 @@ def cleanup_resources_sync():
         log_to_kodi(f"Error closing requests cache session: {e}")
 
 # Register synchronous cleanup with atexit
-import atexit
 atexit.register(cleanup_resources_sync)
 
 def cleanup_library_folders():
@@ -1501,6 +1477,45 @@ def cleanup_library_folders():
                         log_to_kodi(f"Removed misplaced STRM from Sports: {fpath}")
                     except Exception as e:
                         log_to_kodi(f"Failed to remove {fpath}: {e}")
+
+
+async def process_sports_entries(sports_entries, sport_dir, file_sem):
+    """
+    For each unique sport_category, create a folder in sport_dir.
+    For each entry, create a .strm file in the correct folder, named after tvg-name with 'SOC - ' removed.
+    No .nfo files are created for sports entries.
+    """
+    log_to_kodi(f"Processing {len(sports_entries)} sports entries. sport_dir={sport_dir}")
+    if not sports_entries:
+        log_to_kodi("No sports entries to process.")
+        return
+
+    for entry in sports_entries:
+        log_to_kodi(f"Handling sport entry: {entry.get('title', 'N/A')}")
+        category = entry.get('sport_category', 'Other')
+        folder = os.path.join(sport_dir, sanitize(category))
+        ensure_dir(folder)
+
+        # Remove 'SOC - ' from tvg_name if present, then sanitize
+        filename = entry.get('tvg_name', entry['title'])
+        filename = re.sub(r'^SOC\s*-\s*', '', filename, flags=re.IGNORECASE)
+        filename = sanitize(filename)
+        if not filename:
+            filename = 'Unknown'
+
+        strm_path = os.path.join(folder, f"{filename}.strm")
+        log_to_kodi(f"Attempting to create STRM file: {strm_path}")
+
+        if not os.path.exists(strm_path):
+            try:
+                async with file_sem:
+                    async with aiofiles.open(strm_path, 'w') as f:
+                        await f.write(entry['url'])
+                    log_to_kodi(f"Created sports STRM: {strm_path}")
+            except Exception as e:
+                log_to_kodi(f"Failed to write sports STRM file at {strm_path}: {e}")
+        else:
+            log_to_kodi(f"Sports STRM already exists, skipping: {strm_path}")
 
 
 async def main_async():
@@ -1611,4 +1626,3 @@ if __name__ == '__main__':
         # Ensure synchronous cleanup is still called if async.run fails early
         cleanup_resources_sync()
         sys.exit(1)
-
