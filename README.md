@@ -5,7 +5,10 @@ This Kodi addon allows you to seamlessly add IPTV Video-on-Demand (VOD) content 
 > **This addon does not provide any content.** You must have a valid, legal IPTV subscription that allows M3U or Xtream API access.
 
 ---
-
+## Version 2.1
+- Added sports category and folder creation to seperate them from movies
+- Improved movie matching between m3u and json now 99% accurate
+- Improved tv show matching between m3u and imtb now 90% accurate this comes at the expense of a slower run time
 ## Version 2
 - Significant code overhaul
 - Added TMDb metadata creation (credit to [henryjfry](https://github.com/henryjfry))
