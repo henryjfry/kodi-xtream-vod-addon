@@ -269,40 +269,78 @@ def is_title_a_year(title):
 
 def extract_title_and_year(title):
     """
-    Extracts the main title and year from a string, handling various prefixes,
-    suffixes, and year formats. This version is from old-addon.py.
+    Extracts the main title and year from a string, handling various patterns.
+    This version is improved to better handle titles starting with numbers/years.
     """
     original_title = title
+    year = ""
+
+    # 1. Extract year first using a robust pattern for (YYYY)
+    year_match = re.search(r'\((\d{4})\)', title)
+    if year_match:
+        year = year_match.group(1)
+        # Remove the extracted year and surrounding parentheses from the title
+        title = re.sub(r'\s*\(\d{4}\)', '', title).strip()
+
+    # 2. Remove common prefixes and suffixes that are not part of the main title
+    # These patterns should be applied to the title *after* year extraction
     prefixes = [
-        r'^[A-Z]{2,3}\s*[|]\s*', r'^[A-Z]{2,3}\s*[-]\s*', r'^VOD\s*[|]\s*', r'^TV\s*[|]\s*',
-        r'^\d+\.\s*', r'^[A-Z0-9_]+:\s*', r'^[0-9]+\s*[|]\s*', r'^num":\s*\d+,\s*"name":\s*"',
+        r'^[A-Z]{2,3}\s*[|]\s*', # e.g., "EN | "
+        r'^[A-Z]{2,3}\s*[-]\s*', # e.g., "US - "
+        r'^VOD\s*[|]\s*',
+        r'^TV\s*[|]\s*',
+        r'^\d+\.\s*', # e.g., "01. "
+        r'^[A-Z0-9_]+:\s*', # e.g., "CHANNEL_NAME: "
+        r'^[0-9]+\s*[|]\s*',
+        r'^num":\s*\d+,\s*"name":\s*"',
         r'^[A-Z]{2,3}\s*:\s*'
     ]
-    clean_title = title
     for prefix_pattern in prefixes:
-        clean_title = re.sub(prefix_pattern, '', clean_title)
-    clean_title = re.sub(r'^\((\d{4})\)$', r'\1', clean_title.strip())
-    if re.match(r'^\d{4}$', clean_title):
-        log_to_kodi(f"Detected title as a year: {clean_title}")
-        return clean_title, ""
-    year_match = re.search(r'\((\d{4})\)|(?<!\()\b(\d{4})\b', title)
-    year = ""
-    if year_match:
-        year = year_match.group(1) if year_match.group(1) else year_match.group(2)
-    clean_title = title
-    for prefix_pattern in prefixes:
-        clean_title = re.sub(prefix_pattern, '', clean_title)
-    if year:
-        year_pattern_1 = r'\(' + year + r'\).*$'
-        year_pattern_2 = r'\b' + year + r'\b.*$'
-        clean_title = re.sub(year_pattern_1, '', clean_title)
-        if year in clean_title:
-            clean_title = re.sub(year_pattern_2, '', clean_title)
-    suffixes = [r'\s*\|.*$', r'\s*-\s*.*$', r'\s+S\d+E\d+.*$', r'\s*"$']
+        title = re.sub(prefix_pattern, '', title).strip()
+
+    # Remove season/episode info and country codes that might still be present
+    # This is crucial for TV show titles like "1000-lb Sisters (US) S02 E01"
+    title = re.sub(r'\s*\(US\)\s*', '', title, flags=re.IGNORECASE).strip() # Specific for (US)
+    title = re.sub(r'\s*\(GB\)\s*', '', title, flags=re.IGNORECASE).strip() # Specific for (GB)
+    title = re.sub(r'\s*\(AU\)\s*', '', title, flags=re.IGNORECASE).strip() # Specific for (AU)
+    title = re.sub(r'\s*\(TR\)\s*', '', title, flags=re.IGNORECASE).strip() # Specific for (TR)
+    title = re.sub(r'\s*\(JO\)\s*', '', title, flags=re.IGNORECASE).strip() # Specific for (JO)
+    title = re.sub(r'\s*\(CA\)\s*', '', title, flags=re.IGNORECASE).strip() # Specific for (CA)
+    title = re.sub(r'\s*\(KR\)\s*', '', title, flags=re.IGNORECASE).strip() # Specific for (KR)
+    title = re.sub(r'\s*\(ES\)\s*', '', title, flags=re.IGNORECASE).strip() # Specific for (ES)
+    title = re.sub(r'\s*\(JP\)\s*', '', title, flags=re.IGNORECASE).strip() # Specific for (JP)
+    title = re.sub(r'\s*\(ZA\)\s*', '', title, flags=re.IGNORECASE).strip() # Specific for (ZA)
+    title = re.sub(r'\s*\(IT\)\s*', '', title, flags=re.IGNORECASE).strip() # Specific for (IT)
+    title = re.sub(r'\s*\(CZ\)\s*', '', title, flags=re.IGNORECASE).strip() # Specific for (CZ)
+    title = re.sub(r'\s*\(BR\)\s*', '', title, flags=re.IGNORECASE).strip() # Specific for (BR)
+    title = re.sub(r'\s*\(AE\)\s*', '', title, flags=re.IGNORECASE).strip() # Specific for (AE)
+    title = re.sub(r'\s*\(DK\)\s*', '', title, flags=re.IGNORECASE).strip() # Specific for (DK)
+    title = re.sub(r'\s*S\d{1,2}(?:E\d{1,2})?\s*', '', title, flags=re.IGNORECASE).strip() # S02 E01, S02
+    title = re.sub(r'\s*E\d{1,2}\s*', '', title, flags=re.IGNORECASE).strip() # E01 if S is missing
+
+    suffixes = [
+        r'\s*\|.*$', # e.g., " | HD"
+        r'\s*-\s*.*$', # e.g., " - Live"
+        r'\s*"$' # Trailing quote
+    ]
     for suffix_pattern in suffixes:
-        clean_title = re.sub(suffix_pattern, '', clean_title)
-    clean_title = re.sub(r'\s+', ' ', clean_title).strip()
+        title = re.sub(suffix_pattern, '', title).strip()
+
+    # Clean up multiple spaces and strip leading/trailing spaces
+    clean_title = re.sub(r'\s+', ' ', title).strip()
+
+    # If year wasn't found in (YYYY) format, try to find it as a standalone 4-digit number
+    # but only if it's not part of a larger number like "1000-lb"
+    if not year:
+        # Look for a 4-digit number that is a whole word
+        standalone_year_match = re.search(r'\b(\d{4})\b', clean_title)
+        if standalone_year_match:
+            year = standalone_year_match.group(1)
+            # Remove the standalone year from the title
+            clean_title = re.sub(r'\s*\b\d{4}\b', '', clean_title).strip()
+
     return clean_title, year
+
 
 def create_filename(title, content_type, release_year=None):
     """
