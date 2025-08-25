@@ -1,24 +1,33 @@
+import sys
 import os
+
+# Ensure bundled libs take priority
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), 'resources', 'lib'))
+
+# --- Standard library ---
 import re
 import json
 import asyncio
-import aiohttp
-import aiofiles
+import shutil
+import time
+import atexit
 from multiprocessing import cpu_count
 from asyncio import Semaphore
+from datetime import datetime
+from xml.etree.ElementTree import Element, SubElement, ElementTree
+
+# --- Third-party (bundled in resources/lib) ---
+import aiohttp
+import aiofiles
+from unidecode import unidecode
+from requests_cache import CachedSession
+from rapidfuzz import fuzz, process
+
+# --- Kodi APIs ---
 import xbmc
 import xbmcgui
 import xbmcaddon
 import xbmcvfs
-from unidecode import unidecode
-from requests_cache import CachedSession
-from rapidfuzz import fuzz, process
-import shutil
-from xml.etree.ElementTree import Element, SubElement, ElementTree
-from datetime import datetime # Import datetime for dateadded in NFOs
-import time # Import time for runtime calculation
-import sys # Import sys for atexit and sys.exit
-import atexit # Import atexit for registering cleanup functions
 
 # Kodi settings
 ADDON = xbmcaddon.Addon()
@@ -33,14 +42,16 @@ TMDB_API_KEY = ADDON.getSetting('tmdb_api_key')
 if not SERVER_ADD.startswith("http://"):
     SERVER_ADD = f"http://{SERVER_ADD}"
 
-M3U_URL = f'{SERVER_ADD}/get.php?username={USERNAME}&password={PASSWORD}&type=m3u_plus&output=mpegts'
+# Updated API URLs - now we'll use the VOD API directly instead of M3U
 SERIES_API_URL = f'{SERVER_ADD}/player_api.php?username={USERNAME}&password={PASSWORD}&action=get_series'
 VOD_API_URL = f'{SERVER_ADD}/player_api.php?username={USERNAME}&password={PASSWORD}&action=get_vod_streams'
+LIVE_API_URL = f'{SERVER_ADD}/player_api.php?username={USERNAME}&password={PASSWORD}&action=get_live_streams'
 
 # Define paths for JSON cache files
 CACHE_DIR = os.path.join(xbmcvfs.translatePath(ADDON.getAddonInfo('profile')), 'cache')
 SERIES_JSON_PATH = os.path.join(CACHE_DIR, 'ipvos-all_stream_Series.json')
 VOD_JSON_PATH = os.path.join(CACHE_DIR, 'ipvos-all_stream_VOD.json')
+LIVE_JSON_PATH = os.path.join(CACHE_DIR, 'ipvos-all_stream_Live.json')
 
 session = CachedSession(cache_name='xtream_cache', backend='sqlite', expire_after=86400)
 
@@ -58,7 +69,7 @@ def log_to_kodi(msg):
     # Only log messages that are also shown as notifications or are critical debug info
     notification_msgs = [
         'Script started',
-        'Loading and parsing M3U playlist...',
+        'Loading and parsing VOD data...',
         'Processed',
         'Filtering entries by JSON data...',
         'Filtering out existing files...',
@@ -85,19 +96,19 @@ def ensure_dir(dir_path):
         except Exception as e:
             log_to_kodi(f"Could not create directory {dir_path}: {e}")
 
-def confirm_and_delete(paths, m3u_basenames=None, sport_basenames=None, movies_dir=None, sport_dir=None):
+def confirm_and_delete(paths, xtream_basenames=None, sport_basenames=None, movies_dir=None, sport_dir=None):
     """
-    Delete files/folders in paths that are not present in m3u_basenames (for .strm/.nfo files).
+    Delete files/folders in paths that are not present in xtream_basenames (for .strm/.nfo files).
     Also, remove any sport entries (.strm/.nfo) from the movies directory if they match sport_basenames.
     """
     if not paths:
         return
     to_delete = []
     for p in paths:
-        # Only delete .strm/.nfo files not in m3u_basenames
+        # Only delete .strm/.nfo files not in xtream_basenames
         base, ext = os.path.splitext(os.path.basename(p))
         if ext.lower() in ['.strm', '.nfo']:
-            if m3u_basenames is not None and base.lower() not in m3u_basenames:
+            if xtream_basenames is not None and base.lower() not in xtream_basenames:
                 to_delete.append(p)
         else:
             to_delete.append(p) # Always include non-.strm/.nfo files/folders for deletion if they are in paths
@@ -112,7 +123,7 @@ def confirm_and_delete(paths, m3u_basenames=None, sport_basenames=None, movies_d
                     to_delete.append(fpath)
 
     # Remove any movie/tv entries from sport_dir that are not supposed to be there
-    if m3u_basenames and sport_dir: # m3u_basenames here refers to non-sport content
+    if xtream_basenames and sport_dir: # xtream_basenames here refers to non-sport content
         for root, dirs, files in os.walk(sport_dir):
             for fname in files:
                 base, ext = os.path.splitext(fname)
@@ -161,10 +172,11 @@ def sanitize(name):
     return name
 
 def fetch_json_data_sync():
-    """Fetches series and VOD data from the API and saves it to JSON cache files."""
+    """Fetches series, VOD, and live data from the API and saves it to JSON cache files."""
     ensure_dir(CACHE_DIR)
     series_data = []
     vod_data = []
+    live_data = []
     try:
         log_to_kodi(f"Fetching Series data from {SERIES_API_URL}")
         series_resp = session.get(SERIES_API_URL)
@@ -187,9 +199,20 @@ def fetch_json_data_sync():
         with open(VOD_JSON_PATH, 'w') as f:
             json.dump(vod_data, f)
         log_to_kodi(f"Saved {len(vod_data)} VOD entries to {VOD_JSON_PATH}")
+
+        log_to_kodi(f"Fetching Live data from {LIVE_API_URL}")
+        live_resp = session.get(LIVE_API_URL)
+        live_resp.raise_for_status()
+        live_data = live_resp.json()
+        original_live_count = len(live_data)
+        live_data = [item for item in live_data if '#####' not in item.get('name', '')]
+        log_to_kodi(f"Filtered out {original_live_count - len(live_data)} live entries with ##### in the title")
+        with open(LIVE_JSON_PATH, 'w') as f:
+            json.dump(live_data, f)
+        log_to_kodi(f"Saved {len(live_data)} Live entries to {LIVE_JSON_PATH}")
     except Exception as e:
         log_to_kodi(f"Error fetching JSON data: {e}")
-    return series_data, vod_data
+    return series_data, vod_data, live_data
 
 def filter_live_content(data_list):
     """Filters out live stream content from a list of data entries."""
@@ -201,9 +224,10 @@ def filter_live_content(data_list):
     return filtered_data
 
 def load_json_data():
-    """Loads cached JSON data for series and VOD, or fetches it if not available or stale."""
+    """Loads cached JSON data for series, VOD, and live streams, or fetches it if not available or stale."""
     series_data = []
     vod_data = []
+    live_data = []
     try:
         if os.path.exists(SERIES_JSON_PATH):
             with open(SERIES_JSON_PATH, 'r') as f:
@@ -219,47 +243,24 @@ def load_json_data():
             original_vod_count = len(vod_data)
             vod_data = [item for item in vod_data if '#####' not in item.get('name', '')]
             log_to_kodi(f"Filtered out {original_vod_count - len(vod_data)} VOD entries with ##### in the title")
+        if os.path.exists(LIVE_JSON_PATH):
+            with open(LIVE_JSON_PATH, 'r') as f:
+                live_data = json.load(f)
+            log_to_kodi(f"Loaded {len(live_data)} Live entries from cache")
+            original_live_count = len(live_data)
+            live_data = [item for item in live_data if '#####' not in item.get('name', '')]
+            log_to_kodi(f"Filtered out {original_live_count - len(live_data)} live entries with ##### in the title")
     except Exception as e:
         log_to_kodi(f"Error loading cached JSON data: {e}")
 
     # If data is not loaded from cache, or if it's empty, fetch it
-    if not series_data or not vod_data:
-        series_data, vod_data = fetch_json_data_sync()
+    if not series_data or not vod_data or not live_data:
+        series_data, vod_data, live_data = fetch_json_data_sync()
 
     series_data = filter_live_content(series_data)
     vod_data = filter_live_content(vod_data)
     log_to_kodi(f"After filtering out live streams: {len(series_data)} series and {len(vod_data)} VOD entries remain")
-    return series_data, vod_data
-
-async def fetch_m3u():
-    """Fetches the M3U playlist, caches it, and parses its entries."""
-    import time
-    m3u_cache_path = os.path.join(CACHE_DIR, 'playlist.m3u')
-    ensure_dir(CACHE_DIR)
-    # Check if cache exists and is fresh (24h)
-    if os.path.exists(m3u_cache_path):
-        mtime = os.path.getmtime(m3u_cache_path)
-        age = time.time() - mtime
-        if age < 86400: # 24 hours in seconds
-            log_to_kodi(f"Loading M3U playlist from cache: {m3u_cache_path}")
-            with open(m3u_cache_path, 'r', encoding='utf-8', errors='ignore') as f:
-                lines = f.read().splitlines()
-            entries = parse_m3u(lines)
-            log_to_kodi(f"Parsed {len(entries)} entries from cached M3U playlist")
-            return entries
-        else:
-            log_to_kodi(f"M3U cache is older than 24h, re-downloading.")
-
-    # Download and cache
-    log_to_kodi(f"Fetching M3U playlist from {M3U_URL}")
-    resp = session.get(M3U_URL, auth=(USERNAME, PASSWORD))
-    resp.raise_for_status()
-    with open(m3u_cache_path, 'w', encoding='utf-8') as f:
-        f.write(resp.text)
-    lines = resp.text.splitlines()
-    entries = parse_m3u(lines)
-    log_to_kodi(f"Parsed {len(entries)} entries from downloaded M3U playlist")
-    return entries
+    return series_data, vod_data, live_data
 
 def is_title_a_year(title):
     """Checks if a title string represents a year."""
@@ -369,15 +370,6 @@ def create_filename(title, content_type, release_year=None):
         filename = 'Unknown'
     return filename
 
-def extract_stream_id_from_url(url):
-    """Extracts the stream ID from an M3U URL."""
-    # Example: "http://example.com/stream/12345.mkv" -> "12345"
-    # Example: "http://example.com/stream/12345" -> "12345"
-    match = re.search(r'/(\d+)(?:\.[^/]*)?$', url)
-    if match:
-        return match.group(1)
-    return None
-
 def remove_non_ascii(obj):
     """Recursively remove non-ASCII characters from all strings in a dict/list/str structure."""
     if isinstance(obj, dict):
@@ -389,130 +381,128 @@ def remove_non_ascii(obj):
     else:
         return obj
 
-def extract_series_name_from_url(url):
-    """Extract the series name from a /series/ URL segment."""
-    match = re.search(r'/series/([^/]+)/', url)
-    if match:
-        # Replace dots/underscores with spaces, remove extra symbols
-        name = match.group(1)
-        name = re.sub(r'[._]+', ' ', name)
-        name = re.sub(r'[^\w\s-]', '', name)
-        return name.strip()
-    return None
+import re
 
-def parse_m3u(lines):
-    """Parses M3U playlist lines into a list of entry dictionaries."""
+def parse_xtream_data(series_data, vod_data, live_data):
+    """
+    Parses Xtream API data and converts it to entries similar to M3U format.
+    Separates movies, TV shows, and sports based on data structure and category names.
+    """
     entries = []
     excluded_hashtag_count = 0
-    extinf_pat = re.compile(r'#EXTINF:-1\s+(?P<attrs>.*?),(?P<title>.*)')
-    tvg_group_pat = re.compile(r'tvg-group="([^"]*)"')
-    group_title_pat = re.compile(r'group-title="([^"]*)"')
-    stream_id_pat = re.compile(r'stream-id="([^"]*)"')
-    tvg_id_pat = re.compile(r'tvg-id="([^"]*)"')
-    tvg_name_pat = re.compile(r'tvg-name="([^"]*)"') # Added tvg_name pattern
 
-    for i, line in enumerate(lines):
-        if line.startswith('#EXTINF'):
-            try:
-                m = extinf_pat.search(line)
-                if not m:
-                    continue
+    # --- Process VOD data (movies) ---
+    for item in vod_data:
+        try:
+            name = item.get('name', 'Unknown').strip()
+            if '#####' in name:
+                excluded_hashtag_count += 1
+                continue
 
-                title = unidecode(m.group('title')).strip() if m else 'Unknown'
-                attrs = m.group('attrs') if m else ''
+            stream_id = str(item.get('stream_id', ''))
+            category_name = item.get('category_name', '').lower()
 
-                if '#####' in title:
-                    excluded_hashtag_count += 1
-                    continue
+            # Generate stream URL for VOD
+            url = f"{SERVER_ADD}/movie/{USERNAME}/{PASSWORD}/{stream_id}.mkv"
 
-                # Ensure the next line is a URL and not another #EXTINF
-                if i + 1 >= len(lines) or lines[i+1].startswith('#'):
-                    continue
-                url = lines[i+1].strip()
-                if not url or url.startswith('#'):
-                    continue
+            # Determine content type
+            content_type = "movie"
+            if any(tv_keyword in category_name for tv_keyword in ['series', 'show', 'tv']):
+                content_type = "tv"
+            elif any(tv_keyword in name.lower() for tv_keyword in ['season', 'episode', 's0', 'e0']):
+                content_type = "tv"
 
-                # Extract stream_id from URL first (more reliable for movies/VOD)
-                stream_id = extract_stream_id_from_url(url)
+            clean_filename = create_filename(name, content_type)
 
-                # Fallback to attributes if URL extraction failed
-                if not stream_id:
-                    stream_id_match = stream_id_pat.search(attrs)
-                    tvg_id_match = tvg_id_pat.search(attrs)
-                    if stream_id_match:
-                        stream_id = stream_id_match.group(1)
-                    elif tvg_id_match:
-                        stream_id = tvg_id_match.group(1)
-                    elif 'id=' in url: # Original 'id=' check
-                        id_match = re.search(r'id=(\d+)', url)
-                        if id_match:
-                            stream_id = id_match.group(1)
+            entries.append({
+                'title': name,
+                'url': url,
+                'safe': clean_filename,
+                'type': content_type,
+                'group': item.get('category_name', ''),
+                'stream_id': stream_id,
+                'original_title': name,
+                'tmdb_id': item.get('tmdb')
+            })
+        except Exception as e:
+            log_to_kodi(f"[ERROR] VOD parse error: {e}")
 
-                group_title_match = group_title_pat.search(attrs)
-                tvg_group_match = tvg_group_pat.search(attrs)
-                group = ""
-                if group_title_match:
-                    group = group_title_match.group(1)
-                elif tvg_group_match:
-                    group = tvg_group_match.group(1)
+    # --- Process Series data (TV shows) ---
+    for item in series_data:
+        try:
+            name = item.get('name', 'Unknown').strip()
+            if '#####' in name:
+                excluded_hashtag_count += 1
+                continue
 
-                # Extract tvg-name for sports filename, fallback to title
-                tvg_name_match = tvg_name_pat.search(attrs)
-                tvg_name = tvg_name_match.group(1) if tvg_name_match else title
+            series_id = str(item.get('series_id', ''))
+            category_name = item.get('category_name', '')
 
-                content_type = "unknown"
-                sport_category = None
+            url = f"{SERVER_ADD}/series/{USERNAME}/{PASSWORD}/{series_id}.mkv"
 
-                # --- Determine content type: TV first ---
-                if 'series' in group.lower() or 'show' in group.lower() or '/series/' in url.lower() or 'series' in url.lower():
-                    content_type = "tv"
-                # --- Sports detection: if SOCCER in group and not TV ---
-                elif 'soccer' in group.lower():
-                    content_type = "sport"
-                    match = re.search(r'SOCCER\s+([\w\- ]+)', group, re.IGNORECASE)
-                    if match:
-                        sport_category = match.group(1).strip()
-                    log_to_kodi(f"Identified SPORT entry: title={title}, group={group}, category={sport_category}, tvg_name={tvg_name}")
-                # --- Movie detection ---
-                elif 'movie' in group.lower() or 'vod' in url.lower() or '/movie/' in url.lower() or 'movie' in url.lower():
-                    content_type = "movie"
+            clean_filename = create_filename(name, "tv")
+
+            entries.append({
+                'title': name,
+                'url': url,
+                'safe': clean_filename,
+                'type': 'tv',
+                'group': category_name,
+                'stream_id': series_id,
+                'original_title': name,
+                'tmdb_id': item.get('tmdb')
+            })
+        except Exception as e:
+            log_to_kodi(f"[ERROR] Series parse error: {e}")
+
+    # --- Process Live data (sports) ---
+    for item in live_data:
+        try:
+            name = item.get('name', 'Unknown').strip()
+            if '#####' in name:
+                excluded_hashtag_count += 1
+                continue
+
+            stream_id = str(item.get('stream_id', ''))
+            category_name = item.get('category_name', '').lower()
+
+            # Check for sports
+            is_sport = any(keyword in category_name for keyword in ['soccer', 'football', 'sport', 'match', 'league'])
+            sport_category = None
+
+            if is_sport:
+                if 'soccer' in category_name:
+                    match = re.search(r'soccer\s+([\w\- ]+)', category_name, re.IGNORECASE)
+                    sport_category = match.group(1).strip() if match else "Soccer"
                 else:
-                    content_type = "unknown"
+                    sport_category = category_name.title()
 
-                # --- Improved TV show detection fallback for title ---
-                if content_type == "tv":
-                    # If title is empty, generic, or looks like a filename, fallback to URL extraction
-                    fallback_needed = not title or title.lower() in ("unknown", "series", "tv show") or re.match(r'^s\d+e\d+', title, re.I)
-                    if fallback_needed:
-                        extracted = extract_series_name_from_url(url)
-                        if extracted:
-                            title = extracted # Use extracted name as the primary title for TV shows
+                url = f"{SERVER_ADD}/live/{USERNAME}/{PASSWORD}/{stream_id}.ts"
 
-                # Use create_filename to generate the safe filename for the entry
-                # Pass original title and type, year will be handled if present in title
-                clean_filename = create_filename(title, content_type)
+                filename = re.sub(r'^SOC\s*-\s*', '', name, flags=re.IGNORECASE)
+                filename = sanitize(filename) or 'Unknown'
 
-                entry_dict = {
-                    'title': title,
+                entries.append({
+                    'title': name,
                     'url': url,
-                    'safe': clean_filename, # This field now holds the correctly formatted filename
-                    'type': content_type,
-                    'group': group,
+                    'safe': filename,
+                    'type': 'sport',
+                    'group': item.get('category_name', ''),
                     'stream_id': stream_id,
-                    'original_title': title, # Keep original title for potential metadata fetching
-                    'tvg_name': tvg_name # Store tvg_name for sports entries
-                }
-                if content_type == "sport":
-                    entry_dict['sport_category'] = sport_category
-                    log_to_kodi(f"Adding sport entry: {entry_dict}")
-                entries.append(entry_dict)
-            except Exception as e:
-                log_to_kodi(f"Error parsing entry at line {i}: {e}")
-    log_to_kodi(f"Excluded {excluded_hashtag_count} entries with ##### in the title")
+                    'original_title': name,
+                    'tvg_name': name,
+                    'sport_category': sport_category
+                })
+                log_to_kodi(f"[INFO] SPORT entry detected: {name} ({sport_category})")
+        except Exception as e:
+            log_to_kodi(f"[ERROR] Live parse error: {e}")
+
+    log_to_kodi(f"[INFO] Excluded {excluded_hashtag_count} entries with ##### in title")
+    log_to_kodi(f"[INFO] Parsed {len(entries)} total entries from Xtream API data")
     return entries
 
 def filter_entries_by_json(entries, series_data, vod_data):
-    """Filters M3U entries based on matching IDs or titles in JSON data, and enriches entries."""
+    """Filters entries based on matching IDs or titles in JSON data, and enriches entries."""
     filtered_entries = []
     excluded_hashtag_count = 0
     # Create maps for quicker lookup by stream_id
@@ -551,7 +541,6 @@ def filter_entries_by_json(entries, series_data, vod_data):
             # Enrich the entry with TMDB ID and other relevant data from the matched JSON entry
             entry['tmdb_id'] = matched_data.get('tmdb') # Add tmdb_id from JSON
             entry['json_name'] = matched_data.get('name') # Add the name from JSON, often cleaner
-            # entry['json_release_date'] = matched_data.get('added') # Can add other fields if needed
             filtered_entries.append(entry)
             continue # Move to next entry if already matched by ID
 
@@ -1570,14 +1559,15 @@ async def main_async():
         xbmcgui.Dialog().notification('m3utostrm', 'Script started', xbmcgui.NOTIFICATION_INFO)
         log_to_kodi("=== m3utostrm script started ===")
 
-        series_data, vod_data = load_json_data()
+        series_data, vod_data, live_data = load_json_data()
         if not series_data and not vod_data:
             log_to_kodi("Failed to load or fetch Series and VOD data. Aborting.")
             xbmcgui.Dialog().notification('Error', 'Failed to load Series and VOD data', xbmcgui.NOTIFICATION_ERROR)
             return
 
-        xbmcgui.Dialog().notification('m3utostrm', 'Loading and parsing M3U playlist...', xbmcgui.NOTIFICATION_INFO)
-        entries = await fetch_m3u()
+        xbmcgui.Dialog().notification('m3utostrm', 'Loading and parsing Xtream JSON data...', xbmcgui.NOTIFICATION_INFO)
+        # Use the JSON data to parse entries
+        entries = parse_xtream_data(series_data, vod_data, live_data)
 
         # Separate entries by type
         sports_entries = [e for e in entries if e.get('type') == 'sport']

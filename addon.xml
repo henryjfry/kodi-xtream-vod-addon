@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addon id="plugin.video.m3utostrm"
-       name="M3U to STRM Processor"
-       version="2.1.0"
+       name="Xtream Library Sync"
+       version="2.5.0"
        provider-name="Boc">
     <requires>
         <import addon="xbmc.python" version="3.0.0" />
@@ -11,8 +11,8 @@
         <provides>video</provides>
     </extension>
     <extension point="xbmc.addon.metadata">
-        <summary lang="en">Processes M3U playlists and Xtream API logins into STRM files for Kodi</summary>
-        <description lang="en">This addon downloads M3U playlists and converts them into STRM files for Kodi to use with its library.</description>
+        <summary lang="en">Processes Xtream API logins into STRM files for Kodi</summary>
+        <description lang="en">This addon downloads VOD entries from online IPTV providers and converts them into STRM files for Kodi to use with its library.</description>
         <platform>all</platform>
         <assets>
             <icon>icon.png</icon>
