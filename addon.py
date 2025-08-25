@@ -15,6 +15,7 @@ from multiprocessing import cpu_count
 from asyncio import Semaphore
 from datetime import datetime
 from xml.etree.ElementTree import Element, SubElement, ElementTree
+import hashlib
 
 # --- Third-party (bundled in resources/lib) ---
 import aiohttp
@@ -52,6 +53,7 @@ CACHE_DIR = os.path.join(xbmcvfs.translatePath(ADDON.getAddonInfo('profile')), '
 SERIES_JSON_PATH = os.path.join(CACHE_DIR, 'ipvos-all_stream_Series.json')
 VOD_JSON_PATH = os.path.join(CACHE_DIR, 'ipvos-all_stream_VOD.json')
 LIVE_JSON_PATH = os.path.join(CACHE_DIR, 'ipvos-all_stream_Live.json')
+SERIES_INFO_CACHE_PATH = os.path.join(CACHE_DIR, 'series_info_cache.json')
 
 session = CachedSession(cache_name='xtream_cache', backend='sqlite', expire_after=86400)
 
@@ -59,6 +61,116 @@ TCP_LIMIT = 500
 SEM_LIMIT = 200
 CHUNK_SIZE = 100
 FILE_SEM_LIMIT = 100
+
+# --- TV Series Episode Caching and Fetching ---
+
+def load_series_info_cache():
+    if os.path.exists(SERIES_INFO_CACHE_PATH):
+        with open(SERIES_INFO_CACHE_PATH, 'r') as f:
+            try:
+                return json.load(f)
+            except Exception:
+                return {}
+    return {}
+
+def save_series_info_cache(cache):
+    with open(SERIES_INFO_CACHE_PATH, 'w') as f:
+        json.dump(cache, f)
+
+def get_series_info(series_id, username, password, server_add, cache):
+    # Use cache if available
+    if str(series_id) in cache:
+        return cache[str(series_id)]
+    # Otherwise, request from API
+    url = f'{server_add}/player_api.php?username={username}&password={password}&action=get_series_info&series_id={series_id}'
+    try:
+        resp = session.get(url)
+        resp.raise_for_status()
+        data = resp.json()
+        cache[str(series_id)] = data
+        save_series_info_cache(cache)
+        return data
+    except Exception as e:
+        log_to_kodi(f"Error fetching series info for {series_id}: {e}")
+        return None
+
+def get_existing_episode_files(show_folder):
+    existing = set()
+    if not os.path.exists(show_folder):
+        return existing
+    for root, dirs, files in os.walk(show_folder):
+        for fname in files:
+            if fname.lower().endswith('.strm') or fname.lower().endswith('.nfo'):
+                existing.add(fname)
+    return existing
+
+async def process_tv_series_entries(tv_entries, tvshows_dir, username, password, server_add, file_sem):
+    cache = load_series_info_cache()
+    for entry in tv_entries:
+        series_id = entry.get('stream_id') or entry.get('series_id')
+        if not series_id:
+            continue
+        series_info = get_series_info(series_id, username, password, server_add, cache)
+        if not series_info:
+            continue
+        show_name, year = extract_title_and_year(entry['title'])
+        show_name = sanitize(show_name)
+        if year:
+            show_folder = os.path.join(tvshows_dir, f"{show_name} ({year})")
+        else:
+            show_folder = os.path.join(tvshows_dir, show_name)
+        os.makedirs(show_folder, exist_ok=True)
+        existing_files = get_existing_episode_files(show_folder)
+        # Write tvshow.nfo if not exists
+        tvshow_nfo_path = os.path.join(show_folder, 'tvshow.nfo')
+        if not os.path.exists(tvshow_nfo_path):
+            try:
+                async with file_sem:
+                    async with aiofiles.open(tvshow_nfo_path, 'w') as f:
+                        await f.write(meta_to_nfo(entry, 'tv'))
+                        log_to_kodi(f"Wrote TV show NFO file: {tvshow_nfo_path}")
+            except Exception as e:
+                log_to_kodi(f"Failed to write TV show NFO file at {tvshow_nfo_path}: {e}")
+
+        # Robustly handle episodes even if 'seasons' is empty or missing
+        episodes_by_season = series_info.get('episodes', {})
+        # If 'episodes' is not a dict, skip
+        if not isinstance(episodes_by_season, dict):
+            continue
+        # Iterate over all seasons in 'episodes' dict
+        for season_key, episodes in episodes_by_season.items():
+            try:
+                season_num = int(season_key)
+            except Exception:
+                season_num = 0
+            season_folder = os.path.join(show_folder, format_season_folder(season_num))
+            os.makedirs(season_folder, exist_ok=True)
+            tmdb_id = entry.get('tmdb') or series_info.get('info', {}).get('tmdb') or ''
+            for ep in episodes:
+                ep_num = ep.get('episode_num')
+                ep_title = ep.get('title', '')
+                # Use the required filename format: Title (Year) {tmdb=id} SxxExx
+                ep_filename = kodi_tv_episode_filename(show_name, year, season_num, ep_num, "strm", tmdb_id)
+                ep_filename = sanitize(ep_filename)
+                strm_path = os.path.join(season_folder, ep_filename)
+                nfo_path = os.path.join(season_folder, os.path.splitext(ep_filename)[0] + ".nfo")
+                # Only create files if they do not exist
+                if os.path.basename(strm_path) not in existing_files:
+                    try:
+                        async with file_sem:
+                            async with aiofiles.open(strm_path, 'w') as f:
+                                await f.write(ep.get('stream_url', entry['url']))
+                            log_to_kodi(f"Wrote STRM file: {strm_path}")
+                    except Exception as e:
+                        log_to_kodi(f"Failed to write STRM file at {strm_path}: {e}")
+                if os.path.basename(nfo_path) not in existing_files:
+                    try:
+                        async with file_sem:
+                            async with aiofiles.open(nfo_path, 'w') as f:
+                                await f.write(meta_to_nfo(ep, "tv"))
+                            log_to_kodi(f"Wrote NFO file: {nfo_path}")
+                    except Exception as e:
+                        log_to_kodi(f"Failed to write NFO file at {nfo_path}: {e}")
 
 # Global session for aiohttp
 AIOHTTP_SESSION = None
@@ -1226,19 +1338,33 @@ def extract_season_episode(title):
 
 def format_season_folder(season_num):
     """Formats a season number into a standard folder name (e.g., "Season 01")."""
-    return f"Season {season_num:02d}"
+    # Ensure season_num is not None and is an integer
+    try:
+        num = int(season_num) if season_num is not None else 0
+    except Exception:
+        num = 0
+    return f"Season {num:02d}"
 
 def kodi_tv_episode_filename(showname, year, season, episode, ext, tmdb_id=''):
     """
     Generates a Kodi-compliant filename for a TV episode.
     Ensures correct formatting with season/episode numbers and extension.
     """
+    # Ensure season and episode are not None and are integers
+    try:
+        season_num = int(season) if season is not None else 0
+    except Exception:
+        season_num = 0
+    try:
+        episode_num = int(episode) if episode is not None else 0
+    except Exception:
+        episode_num = 0
     base = f"{showname}"
     if year:
         base += f" ({year})"
     if tmdb_id:
         base += f" {{tmdb={tmdb_id}}}" # Kodi NFO matching tag
-    base += f" S{season:02d}E{episode:02d}.{ext}"
+    base += f" S{season_num:02d}E{episode_num:02d}.{ext}"
     return base
 
 async def process_batch(batch, directory, aio_sess, sem, file_sem):
@@ -1573,6 +1699,7 @@ async def main_async():
         sports_entries = [e for e in entries if e.get('type') == 'sport']
         movies_and_tvs_entries = [e for e in entries if e.get('type') in ('movie', 'tv')]
 
+
         # Process sports entries first (no metadata fetching for these)
         await process_sports_entries(sports_entries, SPORT_DIR, file_sem)
         xbmcgui.Dialog().notification('m3utostrm', f'Processed {len(sports_entries)} sports entries.', xbmcgui.NOTIFICATION_INFO)
@@ -1605,9 +1732,8 @@ async def main_async():
         # Process movies in batches
         for batch in [movies[i:i+CHUNK_SIZE] for i in range(0, len(movies), CHUNK_SIZE)]:
             await process_batch(batch, MOVIES_DIR, AIOHTTP_SESSION, sem, file_sem)
-        # Process TV shows in batches
-        for batch in [tvs[i:i+CHUNK_SIZE] for i in range(0, len(tvs), CHUNK_SIZE)]:
-            await process_batch(batch, TVSHOWS_DIR, AIOHTTP_SESSION, sem, file_sem)
+        # Process TV shows using new robust episode logic
+        await process_tv_series_entries(tvs, TVSHOWS_DIR, USERNAME, PASSWORD, SERVER_ADD, file_sem)
 
         await update_library()
 
