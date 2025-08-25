@@ -1,10 +1,15 @@
 # Kodi Xtream VOD Addon: IPTV VOD to Library
 
-This Kodi addon allows you to seamlessly add IPTV Video-on-Demand (VOD) content to your Kodi library using Xtream API logins or a compatible M3U playlist. It parses your IPTV provider's M3U playlist and automatically generates `.strm` and `.nfo` files for movies and TV shows, enabling full Kodi library integration with metadata, artwork, and Trakt support.
+This Kodi addon allows you to seamlessly add IPTV Video-on-Demand (VOD) content to your Kodi library using Xtream API logins. It parses your IPTV provider's json responses and automatically generates `.strm` and `.nfo` files for movies and TV shows, enabling full Kodi library integration with metadata, artwork, and Trakt support.
 
-> **This addon does not provide any content.** You must have a valid, legal IPTV subscription that allows M3U or Xtream API access.
+> **This addon does not provide any content.** You must have a valid, legal IPTV subscription that allows Xtream API access.
 
 ---
+## Version 2.5
+- Retired m3u support as this is now used less and less and causing authentication errors with some IPTV suppliers
+- Switched to full Xtream API json responses for parsing
+- Change name addon name to reflect the changes
+- Bundled all python dependancies with the addon to avoid the need for pip installations, this should now work on Android but has not been tested (feedback appreciated)
 ## Version 2.1
 - Added sports category and folder creation to seperate them from movies
 - Improved movie matching between m3u and json now 99% accurate
@@ -21,12 +26,12 @@ This Kodi addon allows you to seamlessly add IPTV Video-on-Demand (VOD) content 
 ## Features
 
 - **Automatic VOD Library Integration:**
-  - Parses IPTV M3U playlists and creates `.strm` and `.nfo` files for movies and TV shows.
+  - Parses IPTV json responses and creates `.strm` and `.nfo` files for movies and TV shows.
   - Organises content into your chosen Movies and TV Shows directories for easy Kodi library scanning.
   - Fetches rich metadata and artwork from TMDb for a complete Kodi experience.
 - **Configurable:**
-  - Set working, movies, and TV shows directories.
-  - Supports both Xtream API and direct M3U playlist URLs.
+  - Set working, Movies, and TV Shows directories.
+  - Supports Xtream API only (if you need M3U playlist support use version 2.1, note that you will need to install the required python denpencies as they are not bundled prior to 2.5).
   - Adjustable update interval and time.
 - **Efficient & Safe:**
   - 24-hour caching to avoid unnecessary downloads and reduce risk of provider bans.
@@ -34,20 +39,20 @@ This Kodi addon allows you to seamlessly add IPTV Video-on-Demand (VOD) content 
   - Cleans all metadata and filenames to be ASCII-only for maximum compatibility.
 - **No Live TV:**
   - This addon is for VOD only. For live TV channels, use [NextPVR](https://www.nextpvr.com/) or similar solutions.
-
+  - Live TV json is saved in .kodi/userdata/addon_data/plugin.video.m3utostrm/cache/ipvos-all_stream_Live.json but not integrated
 ---
 
 ## How It Works
 
 1. **Configuration:**
    - Set your working, movies, and TV shows directories in the Kodi addon settings.
-   - Enter your IPTV provider's server address, username, and password (Xtream API or M3U details).
+   - Enter your IPTV provider's server address, username, and password (Xtream API details).
    - Enter your TMDb API key, these can be created for free from [TMDb](https://developer.themoviedb.org/docs/getting-started)
 2. **Fetching & Caching:**
-   - The addon downloads your M3U playlist and caches it for 24 hours to minimise server load.
+   - The addon downloads json responses and caches them for 24 hours to minimise server load.
    - Series and VOD metadata are also cached for 24 hours.
 3. **Parsing & File Generation:**
-   - The M3U is parsed, and entries are matched to your provider's VOD/series catalog.
+   - The json files are parsed, and entries are matched to your provider's VOD/series catalog.
    - For each movie or TV episode, a `.strm` file (with the stream URL) and a Kodi-compatible `.nfo` file (with full metadata) are created in the appropriate directory.
    - TV shows are organised into folders by show and season.
 4. **Kodi Library Integration:**
@@ -57,7 +62,17 @@ This Kodi addon allows you to seamlessly add IPTV Video-on-Demand (VOD) content 
 ---
 
 ## Installation Instructions
+### 2.5 Onwards
+1. **Install the Addon**
+   - Download the latest addon ZIP from the [Releases](https://github.com/Boc86/kodi-xtream-vod-addon/releases) page.
+   - In Kodi, enable installation from unknown sources.
+   - Go to **Add-ons > Install from zip file** and select the downloaded ZIP.
+2. **Configure the Addon**
+   - Open the addon configuration and set your directories, IPTV credentials, and TMDb API Key.
+3. **Add Sources to Kodi Library**
+   - Add your Movies and TV Shows directories as sources in Kodi and scan them into your library.
 
+### Pre 2.5
 1. **Install Python Requirements**
    - Download the [requirements.txt](https://github.com/Boc86/kodi-xtream-vod-addon/blob/main/requirements.txt) file.
    - Open a terminal in the folder where you downloaded `requirements.txt` and run:
@@ -83,7 +98,7 @@ This Kodi addon allows you to seamlessly add IPTV Video-on-Demand (VOD) content 
 - **Caching:**
   - To avoid excessive polling and potential bans from your IPTV provider, the addon caches playlist and metadata for 24 hours. Do not reduce this interval.
 - **No Content Provided:**
-  - This addon does not provide any content. You must have a valid, legal IPTV subscription that allows M3U or Xtream API access.
+  - This addon does not provide any content. You must have a valid, legal IPTV subscription that Xtream API access.
 - **Compatibility:**
   - All metadata and filenames are cleaned to be ASCII-only for maximum compatibility with Kodi and various filesystems.
 - **Support:**
@@ -100,4 +115,4 @@ This Kodi addon allows you to seamlessly add IPTV Video-on-Demand (VOD) content 
 
 Enjoy your IPTV VOD content fully integrated into your Kodi library!
 
-Credit to [henryjfry](https://github.com/henryjfry) for pointing me in the direction of his repo and existing VOD work that has inspired the V2 re-write
+Credit to [henryjfry](https://github.com/henryjfry) for pointing me in the direction of his repo and existing VOD work that inspired the V2 re-write
