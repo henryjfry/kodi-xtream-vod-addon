@@ -1,10 +1,16 @@
+Thanks to fryhenryj for taking the time to fix my shoddy attempt at vibe coding this addon. Hopefully with his effort and fixes it can be of use for soe people
+
 # Kodi Xtream VOD Addon: IPTV VOD to Library
 
 This Kodi addon allows you to seamlessly add IPTV Video-on-Demand (VOD) content to your Kodi library using Xtream API logins. It parses your IPTV provider's json responses and automatically generates `.strm` and `.nfo` files for movies and TV shows, enabling full Kodi library integration with metadata, artwork, and Trakt support.
 
 > **This addon does not provide any content.** You must have a valid, legal IPTV subscription that allows Xtream API access.
 
+## Version 2.6
+- Fixed by fryhenryj, all credit for taking my shoddy vibe coding attempt and turning it into something useful
+
 ---
+
 ## Version 2.5
 - Retired m3u support as this is now used less and less and causing authentication errors with some IPTV suppliers
 - Switched to full Xtream API json responses for parsing
@@ -116,3 +122,4 @@ This Kodi addon allows you to seamlessly add IPTV Video-on-Demand (VOD) content 
 Enjoy your IPTV VOD content fully integrated into your Kodi library!
 
 Credit to [henryjfry](https://github.com/henryjfry) for pointing me in the direction of his repo and existing VOD work that inspired the V2 re-write
+
