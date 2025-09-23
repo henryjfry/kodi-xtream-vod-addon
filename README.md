@@ -1,4 +1,4 @@
-Thanks to fryhenryj for taking the time to fix my shoddy attempt at vibe coding this addon. Hopefully with his effort and fixes it can be of use for soe people
+Thanks to henryjfry for taking the time to fix my shoddy attempt at vibe coding this addon. Hopefully with his effort and fixes it can be of use for soe people
 
 # Kodi Xtream VOD Addon: IPTV VOD to Library
 
@@ -122,4 +122,5 @@ This Kodi addon allows you to seamlessly add IPTV Video-on-Demand (VOD) content 
 Enjoy your IPTV VOD content fully integrated into your Kodi library!
 
 Credit to [henryjfry](https://github.com/henryjfry) for pointing me in the direction of his repo and existing VOD work that inspired the V2 re-write
+
 
