@@ -7,7 +7,7 @@ This Kodi addon allows you to seamlessly add IPTV Video-on-Demand (VOD) content 
 > **This addon does not provide any content.** You must have a valid, legal IPTV subscription that allows Xtream API access.
 
 ## Version 2.6
-- Fixed by fryhenryj, all credit for taking my shoddy vibe coding attempt and turning it into something useful
+- Fixed by henryjfry, all credit for taking my shoddy vibe coding attempt and turning it into something useful
 
 ---
 
@@ -122,5 +122,6 @@ This Kodi addon allows you to seamlessly add IPTV Video-on-Demand (VOD) content 
 Enjoy your IPTV VOD content fully integrated into your Kodi library!
 
 Credit to [henryjfry](https://github.com/henryjfry) for pointing me in the direction of his repo and existing VOD work that inspired the V2 re-write
+
 
 
