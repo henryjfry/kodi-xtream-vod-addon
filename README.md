@@ -1,3 +1,8 @@
+REWRITE
+
+etc before + i am bad at docs
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
 **Code generated using Github Autopilot**
 
 Thanks to henryjfry for taking the time to fix my shoddy attempt at vibe coding this addon. Hopefully with his effort and fixes it can be of use for some people
@@ -124,6 +129,7 @@ This Kodi addon allows you to seamlessly add IPTV Video-on-Demand (VOD) content 
 Enjoy your IPTV VOD content fully integrated into your Kodi library!
 
 Credit to [henryjfry](https://github.com/henryjfry) for pointing me in the direction of his repo and existing VOD work that inspired the V2 re-write
+
 
 
 
